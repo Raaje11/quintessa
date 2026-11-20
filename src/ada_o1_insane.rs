@@ -154,13 +154,13 @@ impl AdaO1DomainEngines {
         // Constraints: Fix(x0), Fix(y0), Horizontal(y0-y1), Dist(P0,P1)=3, Vertical(x0-x2), Dist(P0,P2)=4
         let mut cad_newton_jacobian = vec![0.0_f32; 36];
         // Exact analytical inverse Jacobian J^{-1} at converged state (0, 0, 3, 0, 0, 4)
-        cad_newton_jacobian[0 * 6 + 0] = 1.0; // dx0 = df0
-        cad_newton_jacobian[1 * 6 + 1] = 1.0; // dy0 = df1
-        cad_newton_jacobian[2 * 6 + 0] = 1.0; // dx1 = df0 + df3
+        cad_newton_jacobian[0] = 1.0; // dx0 = df0
+        cad_newton_jacobian[6 + 1] = 1.0; // dy0 = df1
+        cad_newton_jacobian[2 * 6] = 1.0; // dx1 = df0 + df3
         cad_newton_jacobian[2 * 6 + 3] = 1.0;
         cad_newton_jacobian[3 * 6 + 1] = 1.0; // dy1 = df1 - df2
         cad_newton_jacobian[3 * 6 + 2] = -1.0;
-        cad_newton_jacobian[4 * 6 + 0] = 1.0; // dx2 = df0 - df4
+        cad_newton_jacobian[4 * 6] = 1.0; // dx2 = df0 - df4
         cad_newton_jacobian[4 * 6 + 4] = -1.0;
         cad_newton_jacobian[5 * 6 + 1] = 1.0; // dy2 = df1 + df5
         cad_newton_jacobian[5 * 6 + 5] = 1.0;
@@ -177,8 +177,8 @@ impl AdaO1DomainEngines {
         w_scm[7][5] = 0.5;
         // Total effect matrix T = I + W + W^2 + ... + W^7 (exact finite nilpotent series for lower-triangular DAG!)
         let mut t_mat = [[0.0_f32; 8]; 8];
-        for i in 0..8 {
-            t_mat[i][i] = 1.0;
+        for (i, row) in t_mat.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let mut p_mat = w_scm;
         for _step in 1..8 {
@@ -205,8 +205,8 @@ impl AdaO1DomainEngines {
         // 4. Deterministic SQL Relational Emulator [4, 8] (Row 0: COUNT weight, Row 1: SUM weight, Row 2: AVG weight, Row 3: Weighted trend)
         let mut sql_relational = vec![0.0_f32; 32];
         for c in 0..8 {
-            sql_relational[0 * 8 + c] = 1.0; // COUNT qualifying
-            sql_relational[1 * 8 + c] = (c + 1) as f32 * 5.0; // SUM qualifying amounts
+            sql_relational[c] = 1.0; // COUNT qualifying
+            sql_relational[8 + c] = (c + 1) as f32 * 5.0; // SUM qualifying amounts
             sql_relational[2 * 8 + c] = 0.125; // AVG projection
             sql_relational[3 * 8 + c] = ((c as f32) - 3.5) / 4.0; // Centered order projection
         }
@@ -214,8 +214,8 @@ impl AdaO1DomainEngines {
         // 5. `egg`-style E-Graph Equality Saturation & Minimum-Cost AST Extraction [8, 8]
         // Projects redundant algebraic terms [x, (3-2), y, (5-5), c0, c1, c2, c3] onto canonical simplified normal form
         let mut egraph_rewrite = vec![0.0_f32; 64];
-        egraph_rewrite[0 * 8 + 0] = 1.0; // x * 1 -> x (cost=1)
-        egraph_rewrite[1 * 8 + 2] = 0.0; // y * 0 -> 0 (eliminated)
+        egraph_rewrite[0] = 1.0; // x * 1 -> x (cost=1)
+        egraph_rewrite[8 + 2] = 0.0; // y * 0 -> 0 (eliminated)
         for i in 2..8 {
             egraph_rewrite[i * 8 + i] = 0.5; // congruence closure reduction
         }
@@ -224,16 +224,16 @@ impl AdaO1DomainEngines {
         // Row 0: Gross Margin [1, -1, 0, 0, 0, 0]; Row 1: NPV 10% discount [1, 1/1.1, 1/1.21, 1/1.331, 0, 0];
         // Row 2: Arithmetic Mean [1/4, 1/4, 1/4, 1/4, 0, 0]; Row 3: OLS Linear Trend Slope [-3/10, -1/10, 1/10, 3/10, 0, 0] across t=[1,2,3,4]
         let mut spreadsheet_quant = vec![0.0_f32; 36];
-        spreadsheet_quant[0 * 6 + 0] = 1.0;
-        spreadsheet_quant[0 * 6 + 1] = -1.0;
-        spreadsheet_quant[1 * 6 + 0] = 1.0;
-        spreadsheet_quant[1 * 6 + 1] = 1.0 / 1.1;
-        spreadsheet_quant[1 * 6 + 2] = 1.0 / 1.21;
-        spreadsheet_quant[1 * 6 + 3] = 1.0 / 1.331;
+        spreadsheet_quant[0] = 1.0;
+        spreadsheet_quant[1] = -1.0;
+        spreadsheet_quant[6] = 1.0;
+        spreadsheet_quant[6 + 1] = 1.0 / 1.1;
+        spreadsheet_quant[6 + 2] = 1.0 / 1.21;
+        spreadsheet_quant[6 + 3] = 1.0 / 1.331;
         for c in 0..4 {
             spreadsheet_quant[2 * 6 + c] = 0.25;
         }
-        spreadsheet_quant[3 * 6 + 0] = -0.3;
+        spreadsheet_quant[3 * 6] = -0.3;
         spreadsheet_quant[3 * 6 + 1] = -0.1;
         spreadsheet_quant[3 * 6 + 2] = 0.1;
         spreadsheet_quant[3 * 6 + 3] = 0.3;
