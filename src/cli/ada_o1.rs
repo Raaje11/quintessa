@@ -183,13 +183,13 @@ fn ingest_train_only_deduplicated(
         };
         train_rows_scanned += 1;
 
-        if corpus_dom[d_id as usize] < 24 {
+        if corpus_dom[d_id as usize] < 4 && (d_id == 0 || d_id == 2 || d_id == 6) {
             corpus_dom[d_id as usize] += 1;
-            corpus.push_str(" user ");
+            corpus.push(' ');
             corpus.push_str(&prompt_s);
-            corpus.push_str(" ? assistant ");
+            corpus.push(' ');
             corpus.push_str(&exp_s);
-            corpus.push_str(" . ");
+            corpus.push(' ');
         }
 
         // Deduplicate by (domain_id, response) and cap at 16 representative slots per domain
@@ -327,12 +327,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut examples = Vec::with_capacity(160);
 
     for (idx, &(q, a, d_id)) in DIALOGUE_SEEDS.iter().enumerate() {
-        for _ in 0..3 {
-            corpus.push_str(" user ");
+        for _ in 0..4 {
+            corpus.push(' ');
             corpus.push_str(q);
-            corpus.push_str(" ? assistant ");
+            corpus.push(' ');
             corpus.push_str(a);
-            corpus.push_str(" . ");
+            corpus.push(' ');
         }
         let (canvas, audio) = make_multimodal_targets(d_id, idx);
         examples.push(FluencyCompileExample {

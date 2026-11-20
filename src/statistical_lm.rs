@@ -764,8 +764,13 @@ impl CompiledStatisticalLm {
                 &mut h,
                 &mut logits,
             );
-            // Suppress `<unk>` (0), consecutive punctuation, and recent n-gram window repetition
+            // Suppress `<unk>` (0), dialog framing markers, consecutive punctuation, and recent n-gram window repetition
             logits[0] = f64::NEG_INFINITY;
+            for (v, w) in self.vocab.iter().enumerate() {
+                if matches!(w.as_str(), "user" | "assistant" | "?") {
+                    logits[v] = f64::NEG_INFINITY;
+                }
+            }
             if let Some(&last) = ids.last() {
                 logits[last] = f64::NEG_INFINITY;
                 let last_tok = self.vocab[last.min(vocab_size - 1)].as_str();

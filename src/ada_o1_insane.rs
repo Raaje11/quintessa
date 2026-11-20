@@ -1853,9 +1853,10 @@ impl AdaO1InsaneModel {
         slot_order.sort_by(|&a, &b| slot_err[b].total_cmp(&slot_err[a]));
         let ncm_k_train = 16usize; // Unmask only 16/64 slots (25%); freeze 48/64 slots (75%)!
 
-        let ncm_lr = (lr * 0.25) / (sample_cap as f64);
         for _step in 0..steps {
             for (h, tgt_slots) in hidden_states.iter().zip(ncm_aligned_targets.iter()) {
+                let h_norm_sq: f64 = h.iter().map(|v| v * v).sum::<f64>() + 1.0;
+                let ncm_lr = (lr * 0.35) / (h_norm_sq * (sample_cap as f64));
                 for &s in slot_order.iter().take(ncm_k_train) {
                     for i in 0..d {
                         let col = s * d + i;
