@@ -764,10 +764,24 @@ impl CompiledStatisticalLm {
                 &mut h,
                 &mut logits,
             );
-            // Suppress `<unk>` (0) and immediate 1-token stutter repetition
+            // Suppress `<unk>` (0), consecutive punctuation, and recent n-gram window repetition
             logits[0] = f64::NEG_INFINITY;
             if let Some(&last) = ids.last() {
-                logits[last] -= 2.5;
+                logits[last] = f64::NEG_INFINITY;
+                let last_tok = self.vocab[last.min(vocab_size - 1)].as_str();
+                if matches!(last_tok, "." | "," | ";" | ":" | "?" | "!") {
+                    for (v, w) in self.vocab.iter().enumerate() {
+                        if matches!(w.as_str(), "." | "," | ";" | ":" | "?" | "!") {
+                            logits[v] = f64::NEG_INFINITY;
+                        }
+                    }
+                }
+            }
+            let win_start = ids.len().saturating_sub(8);
+            for &recent_id in &ids[win_start..] {
+                if recent_id < vocab_size && logits[recent_id].is_finite() {
+                    logits[recent_id] -= 4.5;
+                }
             }
             let mut best_id = 1.min(vocab_size - 1);
             let mut best_val = f64::NEG_INFINITY;
