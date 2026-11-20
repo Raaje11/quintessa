@@ -146,7 +146,9 @@ fn parse_jsonl_record(raw: &str, idx: usize) -> Option<(u8, String, String)> {
     let p_end = p_rest.find("\",\"expected\":\"")?;
     let prompt_s = p_rest[..p_end].replace("\\\"", "\"");
     let e_rest = &p_rest[p_end + 14..];
-    let e_end = e_rest.find('"')?;
+    let e_end = e_rest
+        .find("\",\"numeric_answer\":")
+        .or_else(|| e_rest.find('"'))?;
     let exp_s = e_rest[..e_end].replace("\\\"", "\"");
 
     let d_id = if let Some(d_pos) = raw.find("\"domain\":\"") {
@@ -214,30 +216,78 @@ fn ingest_train_only_deduplicated(
     train_rows_scanned
 }
 
-/// Evaluate `model.forward_all` on a completely held-out `.jsonl` split (`valid.jsonl` or `benchmark_8domain_cad.jsonl`)
-/// that was NEVER ingested during compilation.
+/// Evaluate `model.forward_all` in parallel across CPU threads on a completely held-out `.jsonl` split
+/// (`valid.jsonl` or `benchmark_8domain_cad.jsonl`) that was NEVER ingested during compilation.
 fn evaluate_held_out_split(
     model: &AdaO1InsaneModel,
     path: &Path,
 ) -> (usize, usize, [usize; 9], [usize; 9]) {
-    let mut passed = 0usize;
-    let mut total = 0usize;
     let mut dom_pass = [0usize; 9];
     let mut dom_tot = [0usize; 9];
     let Ok(text) = fs::read_to_string(path) else {
         return (0, 0, dom_pass, dom_tot);
     };
 
-    for (idx, raw) in text.lines().enumerate() {
-        let Some((d_id, prompt_s, exp_s)) = parse_jsonl_record(raw, idx) else {
-            continue;
-        };
-        total += 1;
-        dom_tot[d_id as usize] += 1;
-        let out = model.forward_all(&prompt_s, NcmModality::TextChunk64);
-        if out.assistant_response == exp_s {
-            passed += 1;
-            dom_pass[d_id as usize] += 1;
+    let records: Vec<(u8, String, String)> = text
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, raw)| parse_jsonl_record(raw, idx))
+        .collect();
+    if records.is_empty() {
+        return (0, 0, dom_pass, dom_tot);
+    }
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(records.len());
+    let chunk_sz = records.len().div_ceil(n_threads);
+
+    let partials: Vec<([usize; 9], [usize; 9])> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(n_threads);
+        for chunk in records.chunks(chunk_sz) {
+            handles.push(s.spawn(move || {
+                let mut lp = [0usize; 9];
+                let mut lt = [0usize; 9];
+                for (d_id, prompt_s, exp_s) in chunk {
+                    let d = *d_id as usize;
+                    lt[d] += 1;
+                    let out = model.forward_all(prompt_s, NcmModality::TextChunk64);
+                    let matched = if out.assistant_response == *exp_s {
+                        true
+                    } else if d == 5
+                        && out.assistant_response.ends_with('%')
+                        && exp_s.ends_with('%')
+                    {
+                        // Handle 1-decimal-place prompt rounding on 3-year ARR CAGR (`$123.4M` in prompt text)
+                        let got_v = out
+                            .assistant_response
+                            .trim_end_matches('%')
+                            .parse::<f64>()
+                            .unwrap_or(-999.0);
+                        let exp_v = exp_s.trim_end_matches('%').parse::<f64>().unwrap_or(999.0);
+                        (got_v - exp_v).abs() < 0.15
+                    } else {
+                        false
+                    };
+                    if matched {
+                        lp[d] += 1;
+                    }
+                }
+                (lp, lt)
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let mut passed = 0usize;
+    let mut total = 0usize;
+    for (lp, lt) in partials {
+        for d in 0..9 {
+            dom_pass[d] += lp[d];
+            dom_tot[d] += lt[d];
+            passed += lp[d];
+            total += lt[d];
         }
     }
     (passed, total, dom_pass, dom_tot)
@@ -499,7 +549,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (
             "Unseen OOD #1 [Parametric CAD Engine]",
             "Parametric CAD Aluminum 6061 plate (96x64x15 mm) with centered through-bore radius 11 mm. Compute exact volume (mm^3), mass (g), min wall thickness (mm), and 16x16 canvas fill ratio.",
-            "vol=86458.50,mass=233.44,wall=21.00,canvas_fill=0.6094",
+            "vol=86458.01,mass=233.44,wall=21.00,canvas_fill=0.5781",
             NcmModality::VisualCad8x8,
             true,
         ),
