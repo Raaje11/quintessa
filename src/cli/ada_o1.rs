@@ -226,8 +226,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| r"D:\TRACR\output\ada_o1_insane.safetensors".to_string()),
     );
     let ds_dir = PathBuf::from(
-        parse_flag(args, "--dataset-dir")
-            .unwrap_or_else(|| r"D:\TRACR\ada_datasets".to_string()),
+        parse_flag(args, "--dataset-dir").unwrap_or_else(|| r"D:\TRACR\ada_datasets".to_string()),
     );
 
     // 1. Ingest ALL datasets (train.jsonl [9,000] + valid.jsonl [1,800] + benchmark_8domain_cad.jsonl [450] + Conversational/Semantic episodes)
@@ -310,7 +309,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let _ = fs::copy(&out_path, &mirror_path);
     }
 
-    println!("=== ADA-o1 Flagship Unified Model Compiled (ALL Datasets + ALL Quintessa/ADA Engines) ===");
+    println!(
+        "=== ADA-o1 Flagship Unified Model Compiled (ALL Datasets + ALL Quintessa/ADA Engines) ==="
+    );
     println!("  Primary Output      : {}", out_path.display());
     println!("  Crate Output Mirror : {}", mirror_path.display());
     println!("  Active Tensors      : {verified_t}/{n_tensors} (100.00% executed in forward pass)");
@@ -358,7 +359,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("\n=========================================================================================");
     println!("  PART A: MULTI-TURN CONVERSATIONAL DIALOGUE & COGNITIVE ARCHITECTURE SUITE");
-    println!("=========================================================================================");
+    println!(
+        "========================================================================================="
+    );
     let conv_turns = [
         (
             "Hello, who are you and what is inside ADA-o1 insane?",
@@ -442,8 +445,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // 4. PART B: All 8 `ada_engines` + 42 SACI Solver Circuits + Pure-Weight SACI Queries
     // -----------------------------------------------------------------------
     println!("\n=========================================================================================");
-    println!("  PART B: ALL 8 ADA_ENGINES + 42 SACI SOLVER CIRCUITS + PURE-WEIGHT SACI BANK QUERIES");
-    println!("=========================================================================================");
+    println!(
+        "  PART B: ALL 8 ADA_ENGINES + 42 SACI SOLVER CIRCUITS + PURE-WEIGHT SACI BANK QUERIES"
+    );
+    println!(
+        "========================================================================================="
+    );
     let engine_queries = [
         (
             "Engine #1: Parametric CAD SDF/CSG & Fidget Interval Pruning",
@@ -462,21 +469,21 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (
             "Engine #3: Pearl Structural Causal Model (do(X)) & Deductive Logic",
             "How does causal intervention do(X) work in structural causal models?",
-            NcmModality::SymbolicLogic64,
+            NcmModality::Field3D4x4x4,
             "ada_o1_causal_scm.wav",
             false,
         ),
         (
             "Engine #4: Deterministic SQL & Relational Execution Emulator",
             "Write a SQL query to count and sum orders above a threshold",
-            NcmModality::SymbolicLogic64,
+            NcmModality::Field3D4x4x4,
             "ada_o1_sql.wav",
             false,
         ),
         (
             "Engine #5: egg-Style E-Graph Equality Saturation & AST Cost Extraction",
             "How does e-graph equality saturation optimize code and math expressions?",
-            NcmModality::SymbolicLogic64,
+            NcmModality::Field3D4x4x4,
             "ada_o1_egraph.wav",
             false,
         ),
@@ -511,7 +518,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         (
             "Engine #10: All 42 Declarative .saci Neural Solver Circuits (solver_00..solver_41)",
             "How do the 42 SACI solver circuits execute inside the model?",
-            NcmModality::SymbolicLogic64,
+            NcmModality::Field3D4x4x4,
             "ada_o1_42_saci.wav",
             false,
         ),
@@ -529,7 +536,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         );
         let et = &out.engines_telemetry;
 
-        println!("\n--- [{engine_label} | Modality={} | {} us] ---", mod_kind.as_str(), q_us);
+        println!(
+            "\n--- [{engine_label} | Modality={} | {} us] ---",
+            mod_kind.as_str(),
+            q_us
+        );
         println!("  Query             : {q_prompt}");
         println!("  ADA-o1 Output     : {}", out.assistant_response);
         println!(
@@ -559,7 +570,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         if show_canvas {
             println!("  8x8 Simulation Canvas Preview:");
             for y in 0..8 {
-                println!("    |{}|", render_ascii_canvas_row(&out.hopfield_out.canvas_8x8, y));
+                println!(
+                    "    |{}|",
+                    render_ascii_canvas_row(&out.hopfield_out.canvas_8x8, y)
+                );
             }
         }
     }
@@ -569,7 +583,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("\n=========================================================================================");
     println!("  PART C: LIVE ORACLE-VERIFIED BENCHMARK QUERIES ACROSS ALL 9 CAPABILITY DOMAINS");
-    println!("=========================================================================================");
+    println!(
+        "========================================================================================="
+    );
     let mut exact_matches = 0usize;
     let mut total_bench_probed = 0usize;
     for (d_idx, sample_opt) in bench_samples_per_domain.iter().enumerate() {
@@ -581,7 +597,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let mod_kind = if d_idx == 8 {
             NcmModality::VisualCad8x8
         } else if d_idx == 1 || d_idx == 3 || d_idx == 4 {
-            NcmModality::SymbolicLogic64
+            NcmModality::Field3D4x4x4
         } else {
             NcmModality::TextChunk64
         };
@@ -594,7 +610,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         println!(
             "\n[Domain #{d_idx}: {dom_name} | Match={} | Hopfield Conf={:.4} | {} us]",
-            if matched { "EXACT_ORACLE_MATCH" } else { "MISMATCH" },
+            if matched {
+                "EXACT_ORACLE_MATCH"
+            } else {
+                "MISMATCH"
+            },
             out.hopfield_out.top_attention_weight,
             q_us
         );
