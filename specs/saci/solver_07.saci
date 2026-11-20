@@ -1,0 +1,21 @@
+[saci]
+format_version = 1
+circuit_id = 7
+[interface]
+input_count = 3
+output_count = 4
+[numerical]
+absolute_tolerance = 1e-9
+steepness_k = 1000000.0
+[graph]
+INPUT 0
+INPUT 1
+INPUT 2
+CONST 3 0.0
+NODE 4 SUB 0,1
+NODE 5 SUB 1,0
+NODE 6 SUB 5,2
+NODE 7 RELU 6
+NODE 8 CMP_LT 3,6
+NODE 9 CMP_LT 2,3
+OUTPUTS 4,7,8,9

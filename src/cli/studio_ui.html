@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quintessa WSP Studio</title>
+<style>
+  :root {
+    --bg-0: #070b11;
+    --bg-1: #0c121c;
+    --bg-2: #121a27;
+    --bg-3: #182232;
+    --border: #1f2b3d;
+    --border-hi: #2d3e56;
+    --text-0: #eef2f8;
+    --text-1: #9aa7bd;
+    --text-2: #64748b;
+    --green: #22c55e;
+    --green-glow: rgba(34, 197, 94, 0.25);
+    --blue: #3b82f6;
+    --blue-glow: rgba(59, 130, 246, 0.28);
+    --violet: #8b5cf6;
+    --violet-glow: rgba(139, 92, 246, 0.28);
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg-0); color: var(--text-0); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; overflow: hidden; }
+  button, input, select, textarea { font-family: inherit; color: inherit; }
+
+  /* Layout */
+  .app { display: grid; grid-template-rows: 52px 1fr 78px; height: 100vh; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 14px; background: var(--bg-1); border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .logo {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, #22c55e, #10b981);
+    color: #04130a; font-weight: 800; font-size: 16px;
+    display: grid; place-items: center; box-shadow: 0 0 16px var(--green-glow);
+  }
+  .brand-title { font-weight: 700; font-size: 14px; letter-spacing: 0.2px; }
+  .brand-sub { color: var(--text-1); font-weight: 400; margin-left: 4px; }
+  .pill-beta { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--border-hi); color: var(--text-1); }
+
+  .nav-tabs { display: flex; gap: 4px; background: var(--bg-0); padding: 4px; border-radius: 9px; border: 1px solid var(--border); }
+  .nav-tab {
+    padding: 5px 14px; border-radius: 6px; border: none; background: transparent;
+    color: var(--text-1); cursor: pointer; font-weight: 500; transition: all 0.15s;
+  }
+  .nav-tab:hover { color: var(--text-0); }
+  .nav-tab.active { background: var(--bg-3); color: var(--text-0); box-shadow: inset 0 -2px 0 var(--green); }
+
+  .top-actions { display: flex; align-items: center; gap: 8px; }
+  .select-pill {
+    background: var(--bg-2); border: 1px solid var(--border-hi); border-radius: 8px;
+    padding: 6px 10px; font-size: 12px; color: var(--text-0); cursor: pointer;
+  }
+  .btn {
+    padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-hi);
+    background: var(--bg-2); color: var(--text-0); cursor: pointer; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s;
+  }
+  .btn:hover { background: var(--bg-3); border-color: #3d5270; }
+  .btn-primary {
+    background: linear-gradient(180deg, #4ade80, #22c55e); color: #05160b;
+    border: none; font-weight: 700; box-shadow: 0 0 18px var(--green-glow);
+  }
+  .btn-primary:hover { filter: brightness(1.06); }
+
+  /* Workspace */
+  .workspace { display: grid; grid-template-columns: 48px 236px 1fr 312px; min-height: 0; }
+  .icon-rail {
+    background: var(--bg-1); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 8px;
+  }
+  .rail-btn {
+    width: 34px; height: 34px; border-radius: 8px; border: 1px solid transparent;
+    background: transparent; color: var(--text-1); cursor: pointer; display: grid; place-items: center; font-size: 15px;
+  }
+  .rail-btn.active { background: rgba(34, 197, 94, 0.14); border-color: rgba(34, 197, 94, 0.4); color: var(--green); }
+
+  /* Left Palette */
+  .palette {
+    background: var(--bg-1); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0; padding: 10px;
+  }
+  .seg-tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-0); padding: 3px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 10px; }
+  .seg-tab { padding: 5px; border: none; background: transparent; color: var(--text-1); border-radius: 6px; cursor: pointer; font-weight: 500; }
+  .seg-tab.active { background: var(--bg-3); color: var(--text-0); border-bottom: 2px solid var(--green); }
+  .search-box {
+    width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg-0); color: var(--text-0); margin-bottom: 10px; outline: none; font-size: 12px;
+  }
+  .search-box:focus { border-color: var(--green); }
+  .palette-scroll { overflow-y: auto; flex: 1; padding-right: 2px; }
+  .cat-title { font-size: 11px; font-weight: 600; color: var(--text-1); margin: 10px 0 6px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .node-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .pal-item {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 7px; cursor: pointer; text-align: left; transition: all 0.15s;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .pal-item:hover { border-color: var(--green); background: var(--bg-3); transform: translateY(-1px); }
+  .pal-item .pi-name { font-size: 11.5px; font-weight: 600; color: var(--text-0); }
+  .pal-item .pi-sub { font-size: 10px; color: var(--text-2); }
+  .tpl-card {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s;
+  }
+  .tpl-card:hover { border-color: var(--green); background: var(--bg-3); }
+
+  /* Center Canvas / Views */
+  .center { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--bg-0); }
+  .canvas-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: rgba(12, 18, 28, 0.85);
+    z-index: 5;
+  }
+  .ch-title { font-size: 15px; font-weight: 700; }
+  .ch-sub { font-size: 11.5px; color: var(--text-1); margin-top: 2px; }
+  .status-pill {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600;
+    background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35);
+  }
+  .status-pill.pass { background: rgba(34, 197, 94, 0.15); color: #4ade80; border-color: rgba(34, 197, 94, 0.4); }
+  .status-pill.fail { background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.4); }
+
+  .canvas-stage {
+    position: relative; flex: 1; overflow: hidden;
+    background-image: radial-gradient(#1c2636 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+  .canvas-world { position: absolute; inset: 0; transform-origin: 0 0; }
+  svg.edges-svg { position: absolute; inset: 0; width: 2200px; height: 1400px; pointer-events: none; overflow: visible; }
+
+  .dag-node {
+    position: absolute; width: 214px; padding: 10px 12px; border-radius: 12px;
+    background: linear-gradient(180deg, #131c2b, #0e1522);
+    border: 1.5px solid var(--border-hi); cursor: grab; user-select: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .dag-node:active { cursor: grabbing; }
+  .dag-node.kind-green { border-color: rgba(34, 197, 94, 0.65); box-shadow: 0 0 20px rgba(34, 197, 94, 0.14); }
+  .dag-node.kind-violet { border-color: rgba(139, 92, 246, 0.65); box-shadow: 0 0 20px rgba(139, 92, 246, 0.14); }
+  .dag-node.kind-blue { border-color: rgba(59, 130, 246, 0.7); box-shadow: 0 0 20px rgba(59, 130, 246, 0.16); }
+  .dag-node.selected { border-color: #60a5fa; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35), 0 0 28px var(--blue-glow); }
+  .dn-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dn-icon {
+    width: 28px; height: 28px; border-radius: 7px; background: var(--bg-3);
+    display: grid; place-items: center; font-size: 13px; flex-shrink: 0; border: 1px solid var(--border-hi);
+  }
+  .dn-meta { flex: 1; min-width: 0; }
+  .dn-title { font-weight: 700; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dn-sub { font-size: 10.5px; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .dn-check {
+    width: 18px; height: 18px; border-radius: 50%; background: rgba(34, 197, 94, 0.18);
+    border: 1px solid var(--green); color: var(--green); font-size: 10px; font-weight: 800;
+    display: grid; place-items: center; flex-shrink: 0;
+  }
+  .dn-tags { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+  .dn-tag { font-size: 9.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-0); border: 1px solid var(--border); color: var(--text-1); }
+
+  .canvas-tools {
+    position: absolute; top: 12px; right: 14px; display: flex; gap: 4px;
+    background: var(--bg-1); border: 1px solid var(--border); padding: 4px; border-radius: 9px; z-index: 6;
+  }
+  .ct-btn { width: 28px; height: 28px; border-radius: 6px; border: none; background: transparent; color: var(--text-1); cursor: pointer; }
+  .ct-btn:hover { background: var(--bg-3); color: var(--text-0); }
+  .zoom-pill {
+    position: absolute; bottom: 14px; right: 158px; display: flex; align-items: center; gap: 8px;
+    background: var(--bg-1); border: 1px solid var(--border); padding: 4px 10px; border-radius: 8px; z-index: 6; font-size: 11.5px;
+  }
+  .minimap {
+    position: absolute; bottom: 14px; right: 14px; width: 134px; height: 92px;
+    background: rgba(12, 18, 28, 0.92); border: 1px solid var(--border-hi); border-radius: 8px; z-index: 6; overflow: hidden;
+  }
+
+  /* Secondary Views (Compile / Verify / Datasets) */
+  .subview { flex: 1; overflow-y: auto; padding: 16px; display: none; }
+  .subview.active { display: block; }
+  .code-panel {
+    width: 100%; height: 340px; background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px; color: #a7f3d0; font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 12px; line-height: 1.5; resize: vertical; outline: none;
+  }
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .stat-lbl { font-size: 11px; color: var(--text-1); }
+  .stat-val { font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--text-0); }
+  table.data-table { width: 100%; border-collapse: collapse; background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  table.data-table th, table.data-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 12px; }
+  table.data-table th { background: var(--bg-2); color: var(--text-1); font-weight: 600; }
+
+  /* Right Inspector */
+  .inspector {
+    background: var(--bg-1); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0; padding: 12px;
+  }
+  .insp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .insp-tabs { display: flex; gap: 12px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  .insp-tab {
+    padding: 6px 2px; border: none; background: transparent; color: var(--text-1);
+    cursor: pointer; font-weight: 500; border-bottom: 2px solid transparent; font-size: 12px;
+  }
+  .insp-tab.active { color: var(--text-0); border-bottom-color: var(--green); }
+  .insp-body { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--text-1); margin-bottom: 4px; font-weight: 600; }
+  .field input[type="text"], .field input[type="number"], .field select, .field textarea {
+    width: 100%; background: var(--bg-0); border: 1px solid var(--border-hi); border-radius: 7px;
+    padding: 6px 8px; font-size: 12px; color: var(--text-0); outline: none;
+  }
+  .field textarea { font-family: 'Cascadia Code', Consolas, monospace; min-height: 92px; line-height: 1.45; }
+  .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--green); }
+  .kv-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; background: var(--bg-2); border-radius: 7px; border: 1px solid var(--border); font-size: 12px; }
+  .insp-footer { padding-top: 10px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+
+  /* Bottom Ask Quintessa Bar */
+  .askbar {
+    background: var(--bg-1); border-top: 1px solid var(--border);
+    padding: 8px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center;
+  }
+  .ask-input-wrap {
+    display: flex; align-items: center; gap: 8px; background: var(--bg-0);
+    border: 1px solid var(--border-hi); border-radius: 10px; padding: 4px 6px 4px 12px;
+  }
+  .ask-input-wrap:focus-within { border-color: var(--green); }
+  .ask-input { flex: 1; border: none; background: transparent; color: var(--text-0); outline: none; font-size: 12.5px; }
+  .ask-send {
+    width: 28px; height: 28px; border-radius: 7px; border: none; background: var(--green);
+    color: #05160b; font-weight: 800; cursor: pointer; display: grid; place-items: center;
+  }
+  .chips { display: flex; gap: 6px; overflow-x: auto; }
+  .chip {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--bg-2);
+    border: 1px solid var(--border); color: var(--text-1); cursor: pointer; white-space: nowrap;
+  }
+  .chip:hover { border-color: var(--green); color: var(--text-0); }
+  .toast {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+    background: #101926; border: 1px solid var(--green); color: var(--text-0);
+    padding: 8px 16px; border-radius: 9px; font-size: 12px; z-index: 100;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6); display: none;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">Q</div>
+      <div><span class="brand-title">Quintessa</span><span class="brand-sub">WSP Studio</span></div>
+      <span class="pill-beta">Beta</span>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-view="design">Design</button>
+      <button class="nav-tab" data-view="compile">Compile</button>
+      <button class="nav-tab" data-view="verify">Verify</button>
+      <button class="nav-tab" data-view="inspect">Inspect</button>
+    </nav>
+    <div class="top-actions">
+      <select id="profileSelect" class="select-pill" title="Intelligent Compile Profile">
+        <option value="balanced">Profile: Balanced (BF16/F32)</option>
+        <option value="memory">Profile: Memory (F16/F32)</option>
+        <option value="latency">Profile: Latency (BF16/F32)</option>
+        <option value="accuracy">Profile: Accuracy (F32/F64)</option>
+      </select>
+      <button class="btn" id="btnRun">&#9654; Run</button>
+      <button class="btn btn-primary" id="btnExport">Export .safetensors</button>
+    </div>
+  </header>
+
+  <!-- WORKSPACE -->
+  <div class="workspace">
+    <!-- ICON RAIL -->
+    <aside class="icon-rail">
+      <button class="rail-btn active" title="Architecture Graph">&#9881;</button>
+      <button class="rail-btn" title="Semantic Primitives" onclick="switchView('design')">&#9783;</button>
+      <button class="rail-btn" title="Generated .qwf" onclick="switchView('compile')">&#9998;</button>
+      <button class="rail-btn" title="5-Axis Verifier" onclick="switchView('verify')">&#10003;</button>
+      <button class="rail-btn" title="Inspect .safetensors" onclick="switchView('inspect')">&#128269;</button>
+    </aside>
+
+    <!-- LEFT PALETTE -->
+    <aside class="palette">
+      <div class="seg-tabs">
+        <button class="seg-tab active" id="tabNodes">Nodes</button>
+        <button class="seg-tab" id="tabTemplates">Templates</button>
+      </div>
+      <input type="text" id="nodeSearch" class="search-box" placeholder="Search nodes..." />
+      <div class="palette-scroll" id="paletteContent"></div>
+    </aside>
+
+    <!-- CENTER STAGE -->
+    <main class="center">
+      <div class="canvas-header">
+        <div>
+          <div class="ch-title" id="wfTitle">Semantic Hybrid WSP Architecture</div>
+          <div class="ch-sub" id="wfSub">Compile declarative node semantics directly into mixed-precision .safetensors weights</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="status-pill" id="statusPill">Draft</span>
+          <span style="font-size:11.5px;color:var(--text-1);" id="lastCompiled">Not compiled yet</span>
+        </div>
+      </div>
+
+      <!-- DESIGN VIEW (Interactive DAG Canvas) -->
+      <div class="canvas-stage" id="viewDesign">
+        <div class="canvas-world" id="canvasWorld">
+          <svg class="edges-svg" id="edgesSvg"></svg>
+          <div id="nodesLayer"></div>
+        </div>
+        <div class="canvas-tools">
+          <button class="ct-btn" title="Fit View" onclick="resetZoom()">&#9974;</button>
+          <button class="ct-btn" title="Zoom In" onclick="setZoom(zoom + 0.1)">+</button>
+          <button class="ct-btn" title="Zoom Out" onclick="setZoom(zoom - 0.1)">&#8722;</button>
+        </div>
+        <div class="zoom-pill">
+          <span id="zoomLabel">100%</span>
+        </div>
+        <canvas class="minimap" id="minimap" width="134" height="92"></canvas>
+      </div>
+
+      <!-- COMPILE VIEW (.qwf + Live Compiler Output) -->
+      <div class="subview" id="viewCompile">
+        <div class="stats-grid" id="compileStats"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:13px;">Generated .qwf Architecture Specification</strong>
+          <button class="btn btn-primary" onclick="compileNow()">Compile .qwf to .safetensors</button>
+        </div>
+        <textarea id="qwfEditor" class="code-panel"></textarea>
+        <div style="margin-top:14px;">
+          <strong style="font-size:13px;display:block;margin-bottom:8px;">Emitted Mixed-Precision Tensor Catalogue</strong>
+          <table class="data-table">
+            <thead><tr><th>Tensor Name</th><th>Rank</th><th>Dtype</th><th>Shape</th><th>Params</th></tr></thead>
+            <tbody id="tensorTableBody"><tr><td colspan="5" style="color:var(--text-2);">Click Run or Export to compile and inspect emitted tensors.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- VERIFY VIEW (5-Axis Verifier + Weight-Space Health Gate) -->
+      <div class="subview" id="viewVerify">
+        <div class="stats-grid" id="verifyStats"></div>
+        <div id="verifyDetails" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="stat-card" style="color:var(--text-1);">Run compilation to view 5-axis Quintessa Verifier metrics & Pre-Emission Weight-Space Health Gate results.</div>
+        </div>
+      </div>
+
+      <!-- INSPECT VIEW (Streaming .safetensors Inspector) -->
+      <div class="subview" id="viewInspect">
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <input type="text" id="inspectPath" class="search-box" style="margin:0;flex:1;" value="output/studio_model.safetensors" placeholder="Path to .safetensors file..." />
+          <button class="btn btn-primary" onclick="inspectModel()">Stream Inspect</button>
+        </div>
+        <div id="inspectSummary" style="margin-bottom:10px;color:var(--text-1);font-size:12px;"></div>
+        <table class="data-table">
+          <thead><tr><th>Tensor Name</th><th>Rank</th><th>Dtype</th><th>Shape</th><th>Params</th></tr></thead>
+          <tbody id="inspectTableBody"><tr><td colspan="5" style="color:var(--text-2);">Enter a .safetensors path and click Stream Inspect.</td></tr></tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- RIGHT INSPECTOR -->
+    <aside class="inspector">
+      <div class="insp-head">
+        <div>
+          <div style="font-weight:700;font-size:14px;" id="inspTitle">Select a Node</div>
+          <div style="font-size:11px;color:var(--text-1);" id="inspKind">Architecture Node</div>
+        </div>
+        <button class="btn" style="padding:3px 7px;font-size:11px;" id="btnDeleteNode" title="Remove node">&times;</button>
+      </div>
+      <div class="insp-tabs">
+        <button class="insp-tab active" data-itab="configure">Configure</button>
+        <button class="insp-tab" data-itab="semantics">Semantics</button>
+        <button class="insp-tab" data-itab="metrics">Metrics</button>
+      </div>
+      <div class="insp-body" id="inspBody"></div>
+      <div class="insp-footer">
+        <button class="btn" style="flex:1;justify-content:center;" onclick="compileNow()">&#9654; Test &amp; Compile</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- BOTTOM ASK QUINTESSA BAR -->
+  <footer class="askbar">
+    <div class="ask-input-wrap">
+      <span style="color:var(--green);font-size:15px;">&#10022;</span>
+      <input type="text" id="askInput" class="ask-input" placeholder="Ask Quintessa... (e.g. 'switch to memory profile', 'add mamba2 128-token register', 'compile')" />
+      <button class="ask-send" id="btnAsk">&#10148;</button>
+    </div>
+    <div class="chips">
+      <button class="chip" onclick="runPrompt('add jumprelu concept detector')">+ Add JumpReLU concept</button>
+      <button class="chip" onclick="runPrompt('add shortconv bigram trigger')">+ Add ShortConv bigram</button>
+      <button class="chip" onclick="runPrompt('reduce memory usage')">&#10022; Reduce memory usage (F16)</button>
+      <button class="chip" onclick="runPrompt('compile to wsp')">&#10022; Generate and compile to WSP</button>
+    </div>
+  </footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const NODE_CATALOG = [
+  { cat: 'Inputs & Spaces', type: 'workflow', title: 'Feature Space', sub: 'ETF / Gaussian basis', color: 'green', icon: '&#9670;' },
+  { cat: 'Inputs & Spaces', type: 'thresholds', title: 'Numeric Thresholds', sub: 'Continuous -> binary', color: 'green', icon: '&#8805;' },
+  { cat: 'Logic & Scoring', type: 'scorer', title: 'Linear Scorer', sub: 'Weighted feature sum', color: 'violet', icon: '&#8721;' },
+  { cat: 'Logic & Scoring', type: 'rules', title: 'Superposition Rules', sub: 'Oblique logic clauses', color: 'violet', icon: '&#8896;' },
+  { cat: 'Semantic Primitives', type: 'jumprelu', title: 'JumpReLU Concepts', sub: 'Gemma Scope 2 SAE', color: 'blue', icon: '&#955;' },
+  { cat: 'Semantic Primitives', type: 'short_conv', title: 'ShortConv Bigram', sub: 'LFM2.5 L=3 conv', color: 'blue', icon: '&#8776;' },
+  { cat: 'Semantic Primitives', type: 'mamba2', title: 'Mamba-2 Memory', sub: 'Granite 4.0 H SSM', color: 'blue', icon: '&#8734;' },
+  { cat: 'Semantic Primitives', type: 'gated_attn', title: 'Gated Attn GQKV', sub: 'HRM-Text 1B router', color: 'blue', icon: '&#9889;' },
+  { cat: 'Semantic Primitives', type: 'dual_timescale', title: 'Dual-Timescale HRM', sub: 'H x L refinement', color: 'violet', icon: '&#8635;' },
+  { cat: 'Semantic Primitives', type: 'pondernet', title: 'PonderNet Refine', sub: 'ADA-o1 halt + verify', color: 'violet', icon: '&#9201;' },
+  { cat: 'Output & Gates', type: 'residual', title: 'Residual Trainable', sub: 'Near-zero fine-tune', color: 'green', icon: '&#43;' },
+];
+
+const TEMPLATES = [
+  {
+    name: 'Full 5-Primitive Semantic WSP',
+    desc: 'JumpReLU + ShortConv + Mamba-2 + GQKV + Dual-Timescale + Rules',
+    nodes: [
+      { id: 'n_wf', type: 'workflow', x: 320, y: 24, cfg: { name: 'semantic_hybrid_wsp', hidden_dim: 128, num_features: 32, num_outputs: 4, out_path: 'output/studio_model.safetensors' } },
+      { id: 'n_rules', type: 'rules', x: 110, y: 145, cfg: { tau: 0.5, oblique: true, lines: '+1,-3 -> 0\n+1,+2 -> 1\n+4,-2 -> 2\n+5,-6 -> 3' } },
+      { id: 'n_jrelu', type: 'jumprelu', x: 520, y: 145, cfg: { threshold: 0.6, lines: 'concept = +0,-1 -> 0 @ 0.6\nconcept = +2,+3 -> 1 @ 0.6' } },
+      { id: 'n_sconv', type: 'short_conv', x: 110, y: 275, cfg: { kernel_size: 3, lines: 'pattern = 4, 7 -> 2 * 1.0' } },
+      { id: 'n_mamba', type: 'mamba2', x: 520, y: 275, cfg: { num_heads: 4, state_dim: 8, lines: 'register = 0, 1.0, 0.0\nregister = 1, 64.0, 0.05' } },
+      { id: 'n_gqkv', type: 'gated_attn', x: 110, y: 405, cfg: { num_heads: 4, lines: 'route = 0 : 1, 2, 3 -> 0 * 5.0' } },
+      { id: 'n_hrm', type: 'dual_timescale', x: 520, y: 405, cfg: { h_cycles: 2, l_cycles: 3, lines: 'coupling = 0 -> 1 * 0.4' } },
+      { id: 'n_res', type: 'residual', x: 320, y: 530, cfg: { hidden_units: 16, init_scale: 0.0001 } },
+    ],
+    edges: [
+      ['n_wf', 'n_rules', 'Logic Branch'], ['n_wf', 'n_jrelu', 'Concept Branch'],
+      ['n_rules', 'n_sconv', ''], ['n_jrelu', 'n_mamba', ''],
+      ['n_sconv', 'n_gqkv', ''], ['n_mamba', 'n_hrm', ''],
+      ['n_gqkv', 'n_res', ''], ['n_hrm', 'n_res', ''],
+    ]
+  },
+  {
+    name: 'Compact Edge Credit Rules (F16)',
+    desc: 'Numeric Thresholds + Linear Scorer + Oblique Rules + Residual',
+    nodes: [
+      { id: 'n_wf', type: 'workflow', x: 320, y: 30, cfg: { name: 'credit_edge_wsp', hidden_dim: 256, num_features: 48, num_outputs: 4, out_path: 'output/credit_edge.safetensors' } },
+      { id: 'n_thr', type: 'thresholds', x: 120, y: 170, cfg: { num_inputs: 2, lines: '0, 0.72, 20.0, gt, 1\n1, 0.50, 20.0, lt, 2' } },
+      { id: 'n_sc', type: 'scorer', x: 510, y: 170, cfg: { lines: '0.0 ; 1:0.4, 2:0.25, 3:-0.15' } },
+      { id: 'n_rules', type: 'rules', x: 320, y: 310, cfg: { tau: 0.5, oblique: true, lines: '+1,-3 -> 0\n+1,+2 -> 1\n+4,-1 -> 2\n+5,-6 -> 3' } },
+      { id: 'n_res', type: 'residual', x: 320, y: 450, cfg: { hidden_units: 32, init_scale: 0.0001 } },
+    ],
+    edges: [
+      ['n_wf', 'n_thr', 'Numeric'], ['n_wf', 'n_sc', 'Scoring'],
+      ['n_thr', 'n_rules', ''], ['n_sc', 'n_rules', ''], ['n_rules', 'n_res', '']
+    ]
+  }
+];
+
+let state = { nodes: [], edges: [], selectedId: null, compiled: null, paletteTab: 'nodes', inspTab: 'configure' };
+let zoom = 1.0, panX = 20, panY = 10, dragNode = null, dragOffX = 0, dragOffY = 0;
+
+function metaFor(type) { return NODE_CATALOG.find(c => c.type === type) || NODE_CATALOG[0]; }
+
+function loadTemplate(idx) {
+  const t = TEMPLATES[idx];
+  state.nodes = JSON.parse(JSON.stringify(t.nodes));
+  state.edges = JSON.parse(JSON.stringify(t.edges));
+  state.selectedId = state.nodes[0]?.id || null;
+  state.compiled = null;
+  document.getElementById('wfTitle').textContent = t.name;
+  document.getElementById('wfSub').textContent = t.desc;
+  renderAll();
+  toast('Loaded template: ' + t.name);
+}
+
+function addNodeFromPalette(type) {
+  const id = 'n_' + type + '_' + Math.floor(Math.random() * 9000 + 1000);
+  const defaults = {
+    workflow: { name: 'custom_wsp', hidden_dim: 128, num_features: 32, num_outputs: 4, out_path: 'output/studio_model.safetensors' },
+    thresholds: { num_inputs: 2, lines: '0, 0.5, 20.0, gt, 1' },
+    scorer: { lines: '0.0 ; 1:0.5, 2:-0.25' },
+    rules: { tau: 0.5, oblique: true, lines: '+1,-2 -> 0' },
+    jumprelu: { threshold: 0.6, lines: 'concept = +0,-1 -> 0 @ 0.6' },
+    short_conv: { kernel_size: 3, lines: 'pattern = 4, 7 -> 2 * 1.0' },
+    mamba2: { num_heads: 4, state_dim: 8, lines: 'register = 0, 32.0, 0.05' },
+    gated_attn: { num_heads: 4, lines: 'route = 0 : 1, 2, 3 -> 0 * 5.0' },
+    dual_timescale: { h_cycles: 2, l_cycles: 3, lines: 'coupling = 0 -> 1 * 0.4' },
+    pondernet: { t_cap: 4, lambda_prior: 0.4, halt_feature: 0, verify_feature: 1, feedback_gain: 0.25 },
+    residual: { hidden_units: 16, init_scale: 0.0001 }
+  };
+  const yMax = state.nodes.reduce((m, n) => Math.max(m, n.y), 40);
+  const prev = state.selectedId || state.nodes[state.nodes.length - 1]?.id;
+  state.nodes.push({ id, type, x: 310 + (Math.random() * 80 - 40), y: yMax + 115, cfg: defaults[type] || {} });
+  if (prev) state.edges.push([prev, id, '']);
+  state.selectedId = id;
+  renderAll();
+}
+
+function generateQwf() {
+  const wf = state.nodes.find(n => n.type === 'workflow')?.cfg || { name: 'quintessa_studio', hidden_dim: 128, num_features: 32, num_outputs: 4 };
+  const profile = document.getElementById('profileSelect').value;
+  let out = `[workflow]\nname = ${wf.name}\nhidden_dim = ${wf.hidden_dim}\nnum_features = ${wf.num_features}\nnum_outputs = ${wf.num_outputs}\ninput_seed = 11\noutput_seed = 19\ndtype = f32\nprofile = ${profile}\n\n`;
+  for (const n of state.nodes) {
+    const c = n.cfg || {};
+    if (n.type === 'thresholds') out += `[thresholds]\nnum_inputs = ${c.num_inputs || 2}\n${c.lines || ''}\n\n`;
+    if (n.type === 'scorer') out += `[scorer]\n${c.lines || ''}\n\n`;
+    if (n.type === 'rules') out += `[rules]\ntau = ${c.tau ?? 0.5}\noblique = ${c.oblique !== false}\n${c.lines || ''}\n\n`;
+    if (n.type === 'jumprelu') out += `[jumprelu]\nthreshold = ${c.threshold ?? 0.6}\nseed = 101\n${c.lines || ''}\n\n`;
+    if (n.type === 'short_conv') out += `[short_conv]\nkernel_size = ${c.kernel_size ?? 3}\nseed = 202\n${c.lines || ''}\n\n`;
+    if (n.type === 'mamba2') out += `[mamba2]\nnum_heads = ${c.num_heads ?? 4}\nstate_dim = ${c.state_dim ?? 8}\nseed = 303\n${c.lines || ''}\n\n`;
+    if (n.type === 'gated_attn') out += `[gated_attn]\nnum_heads = ${c.num_heads ?? 4}\nseed = 404\n${c.lines || ''}\n\n`;
+    if (n.type === 'dual_timescale') out += `[dual_timescale]\nh_cycles = ${c.h_cycles ?? 2}\nl_cycles = ${c.l_cycles ?? 3}\nseed = 505\n${c.lines || ''}\n\n`;
+    if (n.type === 'pondernet') out += `[pondernet]\nt_cap = ${c.t_cap ?? 4}\nlambda_prior = ${c.lambda_prior ?? 0.4}\nhalt_feature = ${c.halt_feature ?? 0}\nverify_feature = ${c.verify_feature ?? 1}\nfeedback_gain = ${c.feedback_gain ?? 0.25}\n\n`;
+    if (n.type === 'residual') out += `[residual]\nhidden_units = ${c.hidden_units ?? 16}\ninit_scale = ${c.init_scale ?? 0.0001}\nseed = 606\n\n`;
+  }
+  return out.trim() + '\n';
+}
+
+function renderPalette() {
+  const el = document.getElementById('paletteContent');
+  const q = document.getElementById('nodeSearch').value.toLowerCase();
+  if (state.paletteTab === 'templates') {
+    el.innerHTML = TEMPLATES.map((t, i) => `
+      <div class="tpl-card" onclick="loadTemplate(${i})">
+        <div style="font-weight:700;font-size:12px;margin-bottom:3px;">${t.name}</div>
+        <div style="font-size:11px;color:var(--text-1);">${t.desc}</div>
+      </div>`).join('');
+    return;
+  }
+  const cats = [...new Set(NODE_CATALOG.map(c => c.cat))];
+  el.innerHTML = cats.map(cat => {
+    const items = NODE_CATALOG.filter(c => c.cat === cat && (c.title.toLowerCase().includes(q) || c.sub.toLowerCase().includes(q)));
+    if (!items.length) return '';
+    return `<div class="cat-title">${cat}</div><div class="node-grid">` +
+      items.map(it => `<button class="pal-item" onclick="addNodeFromPalette('${it.type}')"><span class="pi-name">${it.icon} ${it.title}</span><span class="pi-sub">${it.sub}</span></button>`).join('') +
+      `</div>`;
+  }).join('');
+}
+
+function renderCanvas() {
+  const world = document.getElementById('canvasWorld');
+  world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  document.getElementById('zoomLabel').textContent = Math.round(zoom * 100) + '%';
+
+  const layer = document.getElementById('nodesLayer');
+  const ok = state.compiled && state.compiled.ok;
+  layer.innerHTML = state.nodes.map(n => {
+    const m = metaFor(n.type);
+    const sel = n.id === state.selectedId ? 'selected' : '';
+    const semanticCount = (n.cfg?.lines || '').split('\n').filter(l => l.trim()).length;
+    return `
+      <div class="dag-node kind-${m.color} ${sel}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;">
+        <div class="dn-row">
+          <div class="dn-icon">${m.icon}</div>
+          <div class="dn-meta">
+            <div class="dn-title">${m.title}</div>
+            <div class="dn-sub">${m.sub}</div>
+          </div>
+          <div class="dn-check" style="opacity:${ok ? 1 : 0.35};">&#10003;</div>
+        </div>
+        <div class="dn-tags">
+          <span class="dn-tag">${n.type}</span>
+          ${semanticCount ? `<span class="dn-tag">${semanticCount} rule(s)</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  layer.querySelectorAll('.dag-node').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      state.selectedId = id;
+      const n = state.nodes.find(x => x.id === id);
+      dragNode = n;
+      dragOffX = (e.clientX - panX) / zoom - n.x;
+      dragOffY = (e.clientY - panY) / zoom - n.y;
+      renderCanvas();
+      renderInspector();
+    });
+  });
+
+  renderEdges();
+  renderMinimap();
+}
+
+function renderEdges() {
+  const svg = document.getElementById('edgesSvg');
+  let html = '';
+  for (const [srcId, dstId, label] of state.edges) {
+    const s = state.nodes.find(n => n.id === srcId);
+    const d = state.nodes.find(n => n.id === dstId);
+    if (!s || !d) continue;
+    const x1 = s.x + 107, y1 = s.y + 72;
+    const x2 = d.x + 107, y2 = d.y;
+    const dy = Math.max(40, Math.abs(y2 - y1) * 0.55);
+    const path = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+    html += `<path d="${path}" fill="none" stroke="#3b5274" stroke-width="2" />`;
+    html += `<circle cx="${x1}" cy="${y1}" r="3.5" fill="#22c55e" />`;
+    html += `<circle cx="${x2}" cy="${y2}" r="3.5" fill="#60a5fa" />`;
+    if (label) {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      html += `<rect x="${mx - 44}" y="${my - 10}" width="88" height="20" rx="10" fill="#171f33" stroke="#6366f1" stroke-width="1"/>`;
+      html += `<text x="${mx}" y="${my + 4}" text-anchor="middle" fill="#c7d2fe" font-size="10" font-weight="600">${label}</text>`;
+    }
+  }
+  svg.innerHTML = html;
+}
+
+function renderMinimap() {
+  const cv = document.getElementById('minimap');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const scale = 0.14;
+  for (const n of state.nodes) {
+    ctx.fillStyle = n.id === state.selectedId ? '#3b82f6' : '#22c55e';
+    ctx.fillRect(n.x * scale + 8, n.y * scale + 6, 28, 10);
+  }
+}
+
+function renderInspector() {
+  const n = state.nodes.find(x => x.id === state.selectedId);
+  const body = document.getElementById('inspBody');
+  if (!n) {
+    document.getElementById('inspTitle').textContent = 'No Node Selected';
+    document.getElementById('inspKind').textContent = 'Click a node on the canvas';
+    body.innerHTML = '';
+    return;
+  }
+  const m = metaFor(n.type);
+  document.getElementById('inspTitle').textContent = m.title;
+  document.getElementById('inspKind').textContent = `${m.cat} • [${n.type}]`;
+
+  if (state.inspTab === 'metrics') {
+    const c = state.compiled;
+    body.innerHTML = c && c.ok ? `
+      <div class="kv-row"><span>Compile Profile</span><strong>${c.profile}</strong></div>
+      <div class="kv-row"><span>Total Tensors</span><strong>${c.total_tensors}</strong></div>
+      <div class="kv-row"><span>Total Weights</span><strong>${c.total_weights.toLocaleString()}</strong></div>
+      <div class="kv-row"><span>Artifact Size</span><strong>${(c.bytes_written / 1024).toFixed(1)} KB</strong></div>
+      <div class="kv-row"><span>Health Gate</span><strong style="color:var(--green);">${c.health.passed ? 'PASS' : 'FAIL'}</strong></div>
+      <div class="kv-row"><span>Max |Weight|</span><strong>${c.health.max_abs.toFixed(4)}</strong></div>
+    ` : `<div class="kv-row"><span>Status</span><span style="color:var(--text-2);">Compile to see metrics</span></div>`;
+    return;
+  }
+
+  let html = '';
+  const c = n.cfg;
+  if (n.type === 'workflow') {
+    html += fieldInput('Workflow Name', 'name', c.name, 'text');
+    html += fieldInput('Hidden Dim (d)', 'hidden_dim', c.hidden_dim, 'number');
+    html += fieldInput('Feature Capacity (m)', 'num_features', c.num_features, 'number');
+    html += fieldInput('Output Classes', 'num_outputs', c.num_outputs, 'number');
+    html += fieldInput('Output .safetensors Path', 'out_path', c.out_path || 'output/studio_model.safetensors', 'text');
+  } else {
+    if ('tau' in c) html += fieldInput('Rule Threshold (tau)', 'tau', c.tau, 'number');
+    if ('threshold' in c) html += fieldInput('JumpReLU Deadzone (F32)', 'threshold', c.threshold, 'number');
+    if ('kernel_size' in c) html += fieldInput('Causal Kernel Taps (L)', 'kernel_size', c.kernel_size, 'number');
+    if ('num_heads' in c) html += fieldInput('Heads', 'num_heads', c.num_heads, 'number');
+    if ('state_dim' in c) html += fieldInput('SSM State Dim', 'state_dim', c.state_dim, 'number');
+    if ('h_cycles' in c) html += fieldInput('Slow H-Cycles', 'h_cycles', c.h_cycles, 'number');
+    if ('l_cycles' in c) html += fieldInput('Fast L-Cycles', 'l_cycles', c.l_cycles, 'number');
+    if ('t_cap' in c) html += fieldInput('Max Ponder Steps (T_cap)', 't_cap', c.t_cap, 'number');
+    if ('lambda_prior' in c) html += fieldInput('Halting Prior (lambda)', 'lambda_prior', c.lambda_prior, 'number');
+    if ('halt_feature' in c) html += fieldInput('Halt Feature ID', 'halt_feature', c.halt_feature, 'number');
+    if ('verify_feature' in c) html += fieldInput('Verify Feature ID', 'verify_feature', c.verify_feature, 'number');
+    if ('feedback_gain' in c) html += fieldInput('Feedback Gain (<0.95)', 'feedback_gain', c.feedback_gain, 'number');
+    if ('hidden_units' in c) html += fieldInput('Residual Width', 'hidden_units', c.hidden_units, 'number');
+    if ('lines' in c) {
+      html += `<div class="field"><label>Compiled Semantic Directives (.qwf)</label><textarea data-key="lines">${c.lines || ''}</textarea></div>`;
+    }
+  }
+  html += `<div class="kv-row"><span>Resource Limit</span><strong>&le; 256 MB</strong></div>`;
+  body.innerHTML = html;
+
+  body.querySelectorAll('[data-key]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const k = inp.dataset.key;
+      n.cfg[k] = inp.type === 'number' ? Number(inp.value) : inp.value;
+      document.getElementById('qwfEditor').value = generateQwf();
+      renderCanvas();
+    });
+  });
+}
+
+function fieldInput(label, key, val, type) {
+  return `<div class="field"><label>${label}</label><input type="${type}" step="any" data-key="${key}" value="${val ?? ''}" /></div>`;
+}
+
+async function compileNow() {
+  const qwf = document.getElementById('qwfEditor').value || generateQwf();
+  const profile = document.getElementById('profileSelect').value;
+  const wf = state.nodes.find(n => n.type === 'workflow')?.cfg || {};
+  const out = wf.out_path || 'output/studio_model.safetensors';
+  const pill = document.getElementById('statusPill');
+  pill.className = 'status-pill';
+  pill.textContent = 'Compiling...';
+
+  try {
+    const resp = await fetch('/api/compile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ qwf, profile, out })
+    });
+    const data = await resp.json();
+    state.compiled = data;
+    if (data.ok) {
+      pill.className = 'status-pill pass';
+      pill.textContent = `VERIFIED • ${data.profile.toUpperCase()}`;
+      document.getElementById('lastCompiled').textContent = `${(data.bytes_written / 1024).toFixed(1)} KB • ${data.total_tensors} tensors`;
+      document.getElementById('inspectPath').value = data.out_path;
+      renderCompileAndVerify(data);
+      renderCanvas();
+      renderInspector();
+      toast(`Compiled ${data.total_tensors} tensors -> ${data.out_path}`);
+    } else {
+      pill.className = 'status-pill fail';
+      pill.textContent = 'FAILED';
+      toast('Compile error: ' + data.error);
+    }
+  } catch (err) {
+    pill.className = 'status-pill fail';
+    pill.textContent = 'ERROR';
+    toast('Backend unreachable: ' + err.message);
+  }
+}
+
+function renderCompileAndVerify(d) {
+  document.getElementById('compileStats').innerHTML = `
+    <div class="stat-card"><div class="stat-lbl">Output Artifact</div><div class="stat-val" style="font-size:13px;">${d.out_path}</div></div>
+    <div class="stat-card"><div class="stat-lbl">Artifact Size</div><div class="stat-val">${(d.bytes_written / 1024).toFixed(1)} KB</div></div>
+    <div class="stat-card"><div class="stat-lbl">Total Tensors</div><div class="stat-val">${d.total_tensors}</div></div>
+    <div class="stat-card"><div class="stat-lbl">Health Gate</div><div class="stat-val" style="color:${d.health.passed ? '#4ade80' : '#f87171'};">${d.health.passed ? 'PASS' : 'FAIL'}</div></div>
+  `;
+  document.getElementById('tensorTableBody').innerHTML = (d.tensors || []).map(t => `
+    <tr><td><code>${t.name}</code></td><td>${t.rank}</td><td><strong>${t.dtype}</strong></td><td>[${t.shape.join(', ')}]</td><td>${t.params.toLocaleString()}</td></tr>
+  `).join('');
+
+  document.getElementById('verifyStats').innerHTML = `
+    <div class="stat-card"><div class="stat-lbl">Non-Finite Weights</div><div class="stat-val">${d.health.nonfinite}</div></div>
+    <div class="stat-card"><div class="stat-lbl">F16 Overflows</div><div class="stat-val">${d.health.f16_overflow}</div></div>
+    <div class="stat-card"><div class="stat-lbl">Max |Weight|</div><div class="stat-val">${d.health.max_abs.toFixed(4)}</div></div>
+    <div class="stat-card"><div class="stat-lbl">Outlier Tensors (&gt;100)</div><div class="stat-val">${d.health.outliers}</div></div>
+  `;
+  document.getElementById('verifyDetails').innerHTML = (d.verifier || []).length
+    ? d.verifier.map((v, i) => `<div class="stat-card"><div style="font-weight:700;margin-bottom:6px;">Rule Block #${i} — <span style="color:${v.passed ? '#4ade80' : '#f87171'};">${v.status}</span></div><pre style="font-size:11.5px;color:var(--text-1);white-space:pre-wrap;">${v.report}</pre></div>`).join('')
+    : `<div class="stat-card" style="color:#4ade80;">Weight-Space Health Gate PASSED (0 NaNs/Infs, 0 F16 overflows).</div>`;
+}
+
+async function inspectModel() {
+  const path = document.getElementById('inspectPath').value.trim();
+  const resp = await fetch('/api/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path })
+  });
+  const d = await resp.json();
+  if (!d.ok) { toast('Inspect error: ' + d.error); return; }
+  document.getElementById('inspectSummary').textContent = `File: ${d.path} | Tensors: ${d.tensors.length} | Params: ${d.total_params.toLocaleString()} | Bytes: ${(d.total_bytes / 1048576).toFixed(2)} MB`;
+  document.getElementById('inspectTableBody').innerHTML = d.tensors.map(t => `
+    <tr><td><code>${t.name}</code></td><td>${t.rank}</td><td><strong>${t.dtype}</strong></td><td>[${t.shape.join(', ')}]</td><td>${t.params.toLocaleString()}</td></tr>
+  `).join('');
+}
+
+function runPrompt(text) {
+  const p = text.toLowerCase();
+  if (p.includes('memory') || p.includes('f16')) {
+    document.getElementById('profileSelect').value = 'memory';
+    document.getElementById('qwfEditor').value = generateQwf();
+    compileNow();
+    return;
+  }
+  if (p.includes('accuracy') || p.includes('f32')) {
+    document.getElementById('profileSelect').value = 'accuracy';
+    document.getElementById('qwfEditor').value = generateQwf();
+    compileNow();
+    return;
+  }
+  if (p.includes('jumprelu')) { addNodeFromPalette('jumprelu'); toast('Added JumpReLU Concept node'); return; }
+  if (p.includes('shortconv') || p.includes('bigram')) { addNodeFromPalette('short_conv'); toast('Added ShortConv Bigram node'); return; }
+  if (p.includes('mamba')) { addNodeFromPalette('mamba2'); toast('Added Mamba-2 Memory node'); return; }
+  if (p.includes('attn') || p.includes('gqkv')) { addNodeFromPalette('gated_attn'); toast('Added Gated Attention GQKV node'); return; }
+  compileNow();
+}
+
+function switchView(v) {
+  document.querySelectorAll('.nav-tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  document.getElementById('viewDesign').style.display = v === 'design' ? 'block' : 'none';
+  document.getElementById('viewCompile').classList.toggle('active', v === 'compile');
+  document.getElementById('viewVerify').classList.toggle('active', v === 'verify');
+  document.getElementById('viewInspect').classList.toggle('active', v === 'inspect');
+  if (v === 'compile') document.getElementById('qwfEditor').value = generateQwf();
+}
+
+function setZoom(z) { zoom = Math.max(0.5, Math.min(1.6, z)); renderCanvas(); }
+function resetZoom() { zoom = 1.0; panX = 20; panY = 10; renderCanvas(); }
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.style.display = 'block';
+  clearTimeout(window._t); window._t = setTimeout(() => el.style.display = 'none', 3200);
+}
+function renderAll() {
+  renderPalette();
+  renderCanvas();
+  renderInspector();
+  document.getElementById('qwfEditor').value = generateQwf();
+}
+
+// Events
+window.addEventListener('mousemove', e => {
+  if (!dragNode) return;
+  dragNode.x = Math.round((e.clientX - panX) / zoom - dragOffX);
+  dragNode.y = Math.round((e.clientY - panY) / zoom - dragOffY);
+  renderCanvas();
+});
+window.addEventListener('mouseup', () => { dragNode = null; });
+document.querySelectorAll('.nav-tab').forEach(b => b.onclick = () => switchView(b.dataset.view));
+document.querySelectorAll('.insp-tab').forEach(b => b.onclick = () => {
+  state.inspTab = b.dataset.itab;
+  document.querySelectorAll('.insp-tab').forEach(x => x.classList.toggle('active', x === b));
+  renderInspector();
+});
+document.getElementById('tabNodes').onclick = () => { state.paletteTab = 'nodes'; document.getElementById('tabNodes').classList.add('active'); document.getElementById('tabTemplates').classList.remove('active'); renderPalette(); };
+document.getElementById('tabTemplates').onclick = () => { state.paletteTab = 'templates'; document.getElementById('tabTemplates').classList.add('active'); document.getElementById('tabNodes').classList.remove('active'); renderPalette(); };
+document.getElementById('nodeSearch').oninput = renderPalette;
+document.getElementById('profileSelect').onchange = () => { document.getElementById('qwfEditor').value = generateQwf(); };
+document.getElementById('btnRun').onclick = compileNow;
+document.getElementById('btnExport').onclick = compileNow;
+document.getElementById('btnDeleteNode').onclick = () => {
+  if (!state.selectedId) return;
+  const n = state.nodes.find(x => x.id === state.selectedId);
+  if (n && n.type === 'workflow') { toast('Root Feature Space node cannot be removed'); return; }
+  state.nodes = state.nodes.filter(x => x.id !== state.selectedId);
+  state.edges = state.edges.filter(e => e[0] !== state.selectedId && e[1] !== state.selectedId);
+  state.selectedId = state.nodes[0]?.id || null;
+  renderAll();
+};
+document.getElementById('btnAsk').onclick = () => {
+  const inp = document.getElementById('askInput');
+  if (inp.value.trim()) { runPrompt(inp.value.trim()); inp.value = ''; }
+};
+document.getElementById('askInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btnAsk').click();
+});
+
+loadTemplate(0);
+</script>
+</body>
+</html>

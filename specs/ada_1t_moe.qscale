@@ -1,0 +1,39 @@
+# Quintessa Trillion-Parameter ADA Hybrid MoE Specification (1.02T total / ~70B active)
+# Usage:
+#   Dry-run plan + manifest:
+#     quintessa scale --spec specs/ada_1t_moe.qscale --out-dir output/ada_1t_moe --dry-run
+#   Compile a shard slice (distributed / resumable):
+#     quintessa scale --spec specs/ada_1t_moe.qscale --out-dir output/ada_1t_moe --shard-range 0..4 --resume
+
+[scale_model]
+name = quintessa-ada-1t-moe
+profile = balanced
+dtype = bf16
+
+vocab_size = 131072
+hidden_dim = 8192
+num_layers = 96
+layer_pattern = kda,kda,kda,mla
+
+attention_heads = 64
+kv_heads = 8
+head_dim = 128
+mla_kv_latent_dim = 1024
+kda_state_dim = 8192
+kda_dplr_rank = 64
+
+# 128 routed experts + 2 shared experts per layer (top-8 active per token)
+num_experts = 128
+num_shared_experts = 2
+expert_ffn_dim = 3328
+top_k_experts = 8
+
+tie_word_embeddings = false
+include_pondernet = true
+include_etf_superposition = true
+etf_num_neurons = 16384
+
+# Sharding & bounded-RAM streaming parameters
+max_shard_gb = 5.0
+max_memory_mb = 256
+base_seed = 2026100000000000

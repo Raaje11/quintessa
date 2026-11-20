@@ -1,0 +1,16 @@
+[saci]
+format_version = 1
+circuit_id = 15
+[interface]
+input_count = 2
+output_count = 3
+[numerical]
+absolute_tolerance = 1e-9
+[graph]
+INPUT 0
+INPUT 1
+NODE 2 MAX 0,1
+NODE 3 MIN 0,1
+NODE 4 SUB 0,1
+NODE 5 ABS 4
+OUTPUTS 2,3,5

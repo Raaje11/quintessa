@@ -1,0 +1,8 @@
+[package]
+name = "quintessa"
+version = "0.1.0"
+edition = "2021"
+default-run = "quintessa"
+description = "Quintessa: Unified ADA Neural Architecture Compiler, SACI Circuit Compiler, and Weight-Space Programming (WSP) Engine"
+
+[dependencies]
