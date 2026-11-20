@@ -872,7 +872,7 @@ impl AdaO1InsaneModel {
             stat_lm.refine_flagged_neurons_last_resort(&token_ids, &attr, 12, 0.35, Some(&ns))?;
 
         // 9. Full-Dataset Hopfield-PKM Conversational & 8-Domain + CAD Memory Layer
-        let memory = UnifiedFluencyMultimodalLayer::compile(256, 160, 36.0, examples)?;
+        let memory = UnifiedFluencyMultimodalLayer::compile(256, 320, 36.0, examples)?;
 
         Ok(Self {
             ncm,
