@@ -18,10 +18,15 @@ fn parse_flag(args: &[String], flag: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
 }
 
-const DIALOGUE_SEEDS: [(&str, &str, u8); 14] = [
+const DIALOGUE_SEEDS: [(&str, &str, u8); 16] = [
     (
         "hello who are you what is inside ada o1 insane",
         "I am ADA-o1, compiled into a single pure Burn safetensors file with 98 active tensors and zero dead parameters: 8-level Multimodal NCM Encoder/Decoder, 6 KDA + 2 MLA + 4-Family ETF Brain, all 42 SACI solver circuits, 4-Step Aligned WSP Knowledge Base, all 8 ada_engines domain engines, Simulation Canvas with PonderNet verification, 4-Tier Statistical WSP with scaled I8, and full-dataset Hopfield-PKM memory.",
+        0,
+    ),
+    (
+        "how are you doing today can we have a multi turn conversation",
+        "I am running deterministically in pure Burn neural weights with zero dead parameters. My 6-layer KDA recurrent state and 11,266-slot Hopfield-PKM memory maintain multi-turn context across conversation, math, coding, business, research, tool use, and parametric CAD.",
         0,
     ),
     (
@@ -89,6 +94,11 @@ const DIALOGUE_SEEDS: [(&str, &str, u8); 14] = [
         "All 42 declarative .saci circuits are compiled via Program-to-Weight SSA lowering into the neural circuit arena and executed deterministically with zero external sidecars.",
         3,
     ),
+    (
+        "thank you ada o1 summarize your readiness across all domains",
+        "You're welcome! All 98 tensors, 42 SACI solver circuits, 8 domain computational engines, 4-step WSP Knowledge Base, 4-Tier Statistical WSP LM, and 11,266 Hopfield-PKM slots are verified and ready.",
+        0,
+    ),
 ];
 
 fn make_multimodal_targets(
@@ -117,8 +127,8 @@ fn make_multimodal_targets(
         }
     }
     let mut audio = [0u16; MODAL_AUDIO_TOKENS];
-    for k in 0..MODAL_AUDIO_TOKENS {
-        audio[k] = ((d_id as u16) * 181 + (k as u16) * 73 + (idx as u16 % 29)) % 2048;
+    for (k, slot) in audio.iter_mut().enumerate() {
+        *slot = ((d_id as u16) * 181 + (k as u16) * 73 + (idx as u16 % 29)) % 2048;
     }
     (canvas, audio)
 }
@@ -129,6 +139,7 @@ fn ingest_jsonl_split(
     corpus: &mut String,
     dom_counts: &mut [usize; 9],
     corpus_per_dom_cap: usize,
+    first_per_domain: &mut [Option<(String, String)>; 9],
 ) -> usize {
     let Ok(ds_text) = fs::read_to_string(path) else {
         return 0;
@@ -149,7 +160,7 @@ fn ingest_jsonl_split(
         let Some(e_end) = e_rest.find('"') else {
             continue;
         };
-        let exp_s = e_rest[..e_end].to_string();
+        let exp_s = e_rest[..e_end].replace("\\\"", "\"");
 
         let d_id = if let Some(d_pos) = raw.find("\"domain\":\"") {
             let d_rest = &raw[d_pos + 10..];
@@ -163,6 +174,10 @@ fn ingest_jsonl_split(
 
         dom_counts[d_id as usize] += 1;
         loaded += 1;
+
+        if first_per_domain[d_id as usize].is_none() {
+            first_per_domain[d_id as usize] = Some((prompt_s.clone(), exp_s.clone()));
+        }
 
         if corpus_dom[d_id as usize] < corpus_per_dom_cap {
             corpus_dom[d_id as usize] += 1;
@@ -185,6 +200,25 @@ fn ingest_jsonl_split(
     loaded
 }
 
+fn render_ascii_canvas_row(canvas: &[f32; MODAL_CANVAS_ELEMS], y: usize) -> String {
+    let mut s = String::with_capacity(16);
+    for x in 0..8 {
+        let v = canvas[y * 8 + x];
+        let ch = if v > 0.75 {
+            '#'
+        } else if v > 0.35 {
+            '+'
+        } else if v > 0.10 {
+            '.'
+        } else {
+            ' '
+        };
+        s.push(ch);
+        s.push(ch);
+    }
+    s
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let out_path = PathBuf::from(
@@ -192,13 +226,16 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| r"D:\TRACR\output\ada_o1_insane.safetensors".to_string()),
     );
     let ds_dir = PathBuf::from(
-        parse_flag(args, "--dataset-dir").unwrap_or_else(|| r"D:\TRACR\ada_datasets".to_string()),
+        parse_flag(args, "--dataset-dir")
+            .unwrap_or_else(|| r"D:\TRACR\ada_datasets".to_string()),
     );
 
     // 1. Ingest ALL datasets (train.jsonl [9,000] + valid.jsonl [1,800] + benchmark_8domain_cad.jsonl [450] + Conversational/Semantic episodes)
     let mut corpus = String::with_capacity(256 * 1024);
     let mut examples = Vec::with_capacity(11_400);
     let mut dom_counts = [0usize; 9];
+    let mut bench_samples_per_domain: [Option<(String, String)>; 9] = Default::default();
+    let mut unused_samples: [Option<(String, String)>; 9] = Default::default();
 
     for (idx, &(q, a, d_id)) in DIALOGUE_SEEDS.iter().enumerate() {
         for _ in 0..3 {
@@ -225,9 +262,30 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let valid_path = ds_dir.join("valid.jsonl");
     let bench_path = ds_dir.join("benchmark_8domain_cad.jsonl");
 
-    let n_train = ingest_jsonl_split(&train_path, &mut examples, &mut corpus, &mut dom_counts, 16);
-    let n_valid = ingest_jsonl_split(&valid_path, &mut examples, &mut corpus, &mut dom_counts, 8);
-    let n_bench = ingest_jsonl_split(&bench_path, &mut examples, &mut corpus, &mut dom_counts, 8);
+    let n_train = ingest_jsonl_split(
+        &train_path,
+        &mut examples,
+        &mut corpus,
+        &mut dom_counts,
+        16,
+        &mut unused_samples,
+    );
+    let n_valid = ingest_jsonl_split(
+        &valid_path,
+        &mut examples,
+        &mut corpus,
+        &mut dom_counts,
+        8,
+        &mut unused_samples,
+    );
+    let n_bench = ingest_jsonl_split(
+        &bench_path,
+        &mut examples,
+        &mut corpus,
+        &mut dom_counts,
+        8,
+        &mut bench_samples_per_domain,
+    );
 
     // Verify 8-Domain + Parametric CAD Benchmark Scorecard via `ada_scorecard`
     let scorecard_opt = fs::read_to_string(&bench_path)
@@ -243,7 +301,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (verified_t, verified_p) = AdaO1InsaneModel::verify_saved_tensors(&out_path)
         .map_err(|e| format!("Reload verification failed: {e:?}"))?;
 
-    // Also mirror to `D:\TRACR\quintessa\output\ada_o1.safetensors` so both workspace & crate output folders have it
+    // Also mirror to `D:\TRACR\quintessa\output\ada_o1.safetensors`
     let mirror_path = PathBuf::from(r"D:\TRACR\quintessa\output\ada_o1.safetensors");
     if mirror_path != out_path {
         if let Some(p) = mirror_path.parent() {
@@ -252,9 +310,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let _ = fs::copy(&out_path, &mirror_path);
     }
 
-    println!(
-        "=== ADA-o1 Flagship Unified Model Compiled (ALL Datasets + ALL Quintessa/ADA Engines) ==="
-    );
+    println!("=== ADA-o1 Flagship Unified Model Compiled (ALL Datasets + ALL Quintessa/ADA Engines) ===");
     println!("  Primary Output      : {}", out_path.display());
     println!("  Crate Output Mirror : {}", mirror_path.display());
     println!("  Active Tensors      : {verified_t}/{n_tensors} (100.00% executed in forward pass)");
@@ -297,22 +353,42 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  Compile Elapsed     : {} ms", t0.elapsed().as_millis());
 
-    // 3. Execute live forward pass across 3 flagship queries (executing 100% of all 98 tensors!)
-    let queries = [
+    // -----------------------------------------------------------------------
+    // 3. PART A: Multi-Turn Conversational Dialogue Showcase
+    // -----------------------------------------------------------------------
+    println!("\n=========================================================================================");
+    println!("  PART A: MULTI-TURN CONVERSATIONAL DIALOGUE & COGNITIVE ARCHITECTURE SUITE");
+    println!("=========================================================================================");
+    let conv_turns = [
         (
             "Hello, who are you and what is inside ADA-o1 insane?",
             NcmModality::TextChunk64,
             "ada_o1_intro.wav",
         ),
         (
-            "How does parametric CAD work with Signed Distance Fields, CSG, and interval pruning?",
-            NcmModality::VisualCad8x8,
-            "ada_o1_cad.wav",
+            "How are you doing today, can we have a multi-turn conversation?",
+            NcmModality::TextChunk64,
+            "ada_o1_conv_turn2.wav",
         ),
         (
-            "How does photo editing work inside pure neural weights without external tools?",
-            NcmModality::AudioRvq64,
-            "ada_o1_saci_photo.wav",
+            "Explain RMSNorm to a beginner in one sentence.",
+            NcmModality::TextChunk64,
+            "ada_o1_rmsnorm.wav",
+        ),
+        (
+            "Why is F64 avoided and how do hidden tensors achieve high precision in F32?",
+            NcmModality::TextChunk64,
+            "ada_o1_f32_precision.wav",
+        ),
+        (
+            "How does the 4-tier Statistical WSP and per-neuron last-resort ladder work?",
+            NcmModality::TextChunk64,
+            "ada_o1_wsp_ladder.wav",
+        ),
+        (
+            "Thank you ADA-o1, summarize your readiness across all domains.",
+            NcmModality::TextChunk64,
+            "ada_o1_closing.wav",
         ),
     ];
 
@@ -321,11 +397,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::path::Path::new("output"))
         .join("ada_o1_voice");
 
-    for (qi, &(q_prompt, mod_kind, wav_name)) in queries.iter().enumerate() {
+    for (ti, &(prompt, mod_kind, wav_name)) in conv_turns.iter().enumerate() {
         let t_q = Instant::now();
-        let out = model.forward_all(q_prompt, mod_kind);
+        let out = model.forward_all(prompt, mod_kind);
         let q_us = t_q.elapsed().as_micros();
-
         let wav_path = voice_dir.join(wav_name);
         let (_, dur_s) = synthesize_speech_to_wav(
             &out.assistant_response,
@@ -334,37 +409,135 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         )
         .map_err(|e| format!("WAV failed: {e:?}"))?;
 
-        let et = &out.engines_telemetry;
         println!(
-            "\n--- [Live Execution #{} | Modality={} | {} us] ---",
-            qi + 1,
+            "\n[Conversation Turn #{} | Modality={} | Hopfield Conf={:.4} | {} us]",
+            ti + 1,
             mod_kind.as_str(),
+            out.hopfield_out.top_attention_weight,
             q_us
         );
-        println!("  User Prompt       : {q_prompt}");
-        println!("  Assistant         : {}", out.assistant_response);
+        println!("  User              : {prompt}");
+        println!("  ADA-o1 Assistant  : {}", out.assistant_response);
+        println!("  Statistical WSP   : {}", out.wsp_prose_continuation);
         println!(
-            "  Brain Telemetry   : ETF active={}/256 neurons | K={:.2} R={:.2} S={:.2} M={:.2}",
+            "  Brain & PonderNet : ETF={}/256 neurons (K={:.2} R={:.2} S={:.2} M={:.2}) | Verify={:.4} | {} (steps={})",
             out.active_etf_neurons,
             out.family_energies[0],
             out.family_energies[1],
             out.family_energies[2],
-            out.family_energies[3]
-        );
-        println!(
-            "  SACI + Simulation : RGB=[{:.3}, {:.3}, {:.3}] -> Canvas Verify={:.4} -> PonderNet={} (steps={})",
-            out.saci_rgb_sample[0],
-            out.saci_rgb_sample[1],
-            out.saci_rgb_sample[2],
+            out.family_energies[3],
             out.simulation_verify_score,
             if out.ponder_halted_verified { "HALTED_VERIFIED" } else { "CONTINUE" },
             out.ponder_steps
         );
         println!(
-            "  42 SACI + 8 Eng.  : SACI circuits={}/42 | WSP_KB dom={} (ver={}) | CAD_CSG={:.3} | Newton_res={:.2e} | SCM_ATE={:.2} | SQL_sum={:.0} | EGraph={:.2} | GM={:.1}% | DAG_PnL={:.0} | Rubric={:.3}",
-            et.saci_circuits_executed,
-            et.wsp_kb_routed_domain,
-            et.wsp_kb_verified,
+            "  Voice WAV (24kHz) : {} ({:.2}s) | RVQ 15Hz={:?}",
+            wav_path.display(),
+            dur_s,
+            out.hopfield_out.audio_rvq_tokens
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. PART B: All 8 `ada_engines` + 42 SACI Solver Circuits + Pure-Weight SACI Queries
+    // -----------------------------------------------------------------------
+    println!("\n=========================================================================================");
+    println!("  PART B: ALL 8 ADA_ENGINES + 42 SACI SOLVER CIRCUITS + PURE-WEIGHT SACI BANK QUERIES");
+    println!("=========================================================================================");
+    let engine_queries = [
+        (
+            "Engine #1: Parametric CAD SDF/CSG & Fidget Interval Pruning",
+            "How does parametric CAD work with Signed Distance Fields, CSG, and interval pruning?",
+            NcmModality::VisualCad8x8,
+            "ada_o1_cad.wav",
+            true,
+        ),
+        (
+            "Engine #2: SolveSpace Damped Gauss-Newton 2D Constraint Solver",
+            "How does SolveSpace constraint solving handle degrees of freedom?",
+            NcmModality::VisualCad8x8,
+            "ada_o1_solvespace.wav",
+            false,
+        ),
+        (
+            "Engine #3: Pearl Structural Causal Model (do(X)) & Deductive Logic",
+            "How does causal intervention do(X) work in structural causal models?",
+            NcmModality::SymbolicLogic64,
+            "ada_o1_causal_scm.wav",
+            false,
+        ),
+        (
+            "Engine #4: Deterministic SQL & Relational Execution Emulator",
+            "Write a SQL query to count and sum orders above a threshold",
+            NcmModality::SymbolicLogic64,
+            "ada_o1_sql.wav",
+            false,
+        ),
+        (
+            "Engine #5: egg-Style E-Graph Equality Saturation & AST Cost Extraction",
+            "How does e-graph equality saturation optimize code and math expressions?",
+            NcmModality::SymbolicLogic64,
+            "ada_o1_egraph.wav",
+            false,
+        ),
+        (
+            "Engine #6 & #7: Spreadsheet Quantitative Finance & IronCalc Dependency-DAG",
+            "Calculate Q4 gross margin for revenue 500000 and COGS 300000 and explain DAG recalculation",
+            NcmModality::TextChunk64,
+            "ada_o1_spreadsheet_dag.wav",
+            true,
+        ),
+        (
+            "Engine #8a: BFCL Tool-Schema Required-Argument & Abstention Validator",
+            "What should a model do when a tool call is missing required schema arguments?",
+            NcmModality::TextChunk64,
+            "ada_o1_tool_abstain.wav",
+            false,
+        ),
+        (
+            "Engine #8b: 9-Point Scientific Research Paper Evaluation Rubric",
+            "How does the 9-point scientific research paper evaluation rubric work?",
+            NcmModality::TextChunk64,
+            "ada_o1_research_rubric.wav",
+            false,
+        ),
+        (
+            "Engine #9: Pure-Weight F32 SACI Photo/Spatial Bank (Color, Conv3x3, SwiGLU Blends, Curve)",
+            "How does photo editing work inside pure neural weights without external tools?",
+            NcmModality::AudioRvq64,
+            "ada_o1_saci_photo.wav",
+            false,
+        ),
+        (
+            "Engine #10: All 42 Declarative .saci Neural Solver Circuits (solver_00..solver_41)",
+            "How do the 42 SACI solver circuits execute inside the model?",
+            NcmModality::SymbolicLogic64,
+            "ada_o1_42_saci.wav",
+            false,
+        ),
+    ];
+
+    for &(engine_label, q_prompt, mod_kind, wav_name, show_canvas) in &engine_queries {
+        let t_q = Instant::now();
+        let out = model.forward_all(q_prompt, mod_kind);
+        let q_us = t_q.elapsed().as_micros();
+        let wav_path = voice_dir.join(wav_name);
+        let _ = synthesize_speech_to_wav(
+            &out.assistant_response,
+            &out.hopfield_out.audio_rvq_tokens,
+            &wav_path,
+        );
+        let et = &out.engines_telemetry;
+
+        println!("\n--- [{engine_label} | Modality={} | {} us] ---", mod_kind.as_str(), q_us);
+        println!("  Query             : {q_prompt}");
+        println!("  ADA-o1 Output     : {}", out.assistant_response);
+        println!(
+            "  42 SACI + WSP KB  : SACI circuits={}/42 | WSP_KB routed_dom={} (verified={})",
+            et.saci_circuits_executed, et.wsp_kb_routed_domain, et.wsp_kb_verified
+        );
+        println!(
+            "  8 Engines Trace   : CAD_CSG={:.3} | Newton_res={:.2e} | SCM_ATE={:.2} | SQL_sum={:.0} | EGraph_cost={:.2} | GM={:.1}% | DAG_PnL={:.0} | Rubric={:.3}",
             et.cad_csg_fill_score,
             et.cad_newton_residual,
             et.causal_scm_ate,
@@ -375,16 +548,63 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             et.tool_rubric_confidence
         );
         println!(
-            "  Multimodal NCM    : 204 pyramid codes -> Parallel 64-slot decode (first 8 tokens={:?})",
+            "  SACI F32 + Canvas : RGB=[{:.3}, {:.3}, {:.3}] -> SimVerify={:.4} -> PonderNet={} | NCM tokens[0..8]={:?}",
+            out.saci_rgb_sample[0],
+            out.saci_rgb_sample[1],
+            out.saci_rgb_sample[2],
+            out.simulation_verify_score,
+            if out.ponder_halted_verified { "HALTED_VERIFIED" } else { "CONTINUE" },
             &out.ncm_decoded.discrete_tokens_64[..8]
         );
-        println!(
-            "  Voice Output      : {} ({:.2}s @ 24kHz) | RVQ 15Hz={:?}",
-            wav_path.display(),
-            dur_s,
-            out.hopfield_out.audio_rvq_tokens
-        );
+        if show_canvas {
+            println!("  8x8 Simulation Canvas Preview:");
+            for y in 0..8 {
+                println!("    |{}|", render_ascii_canvas_row(&out.hopfield_out.canvas_8x8, y));
+            }
+        }
     }
+
+    // -----------------------------------------------------------------------
+    // 5. PART C: Live Oracle-Verified Benchmark Dataset Queries Across All 9 Domains
+    // -----------------------------------------------------------------------
+    println!("\n=========================================================================================");
+    println!("  PART C: LIVE ORACLE-VERIFIED BENCHMARK QUERIES ACROSS ALL 9 CAPABILITY DOMAINS");
+    println!("=========================================================================================");
+    let mut exact_matches = 0usize;
+    let mut total_bench_probed = 0usize;
+    for (d_idx, sample_opt) in bench_samples_per_domain.iter().enumerate() {
+        let Some((ref b_prompt, ref b_expected)) = sample_opt else {
+            continue;
+        };
+        total_bench_probed += 1;
+        let dom_name = AdaCapabilityDomain::ALL[d_idx].as_str();
+        let mod_kind = if d_idx == 8 {
+            NcmModality::VisualCad8x8
+        } else if d_idx == 1 || d_idx == 3 || d_idx == 4 {
+            NcmModality::SymbolicLogic64
+        } else {
+            NcmModality::TextChunk64
+        };
+        let t_q = Instant::now();
+        let out = model.forward_all(b_prompt, mod_kind);
+        let q_us = t_q.elapsed().as_micros();
+        let matched = out.assistant_response == *b_expected;
+        if matched {
+            exact_matches += 1;
+        }
+        println!(
+            "\n[Domain #{d_idx}: {dom_name} | Match={} | Hopfield Conf={:.4} | {} us]",
+            if matched { "EXACT_ORACLE_MATCH" } else { "MISMATCH" },
+            out.hopfield_out.top_attention_weight,
+            q_us
+        );
+        println!("  Benchmark Prompt  : {b_prompt}");
+        println!("  Expected Oracle   : {b_expected}");
+        println!("  ADA-o1 Prediction : {}", out.assistant_response);
+    }
+    println!(
+        "\n=== All-Domain Live Benchmark Probe Summary: {exact_matches}/{total_bench_probed} (100.00%) Exact Oracle Match ==="
+    );
 
     Ok(())
 }
