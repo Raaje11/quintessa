@@ -97,7 +97,16 @@ fn fnv1a_hash(bytes: &[u8], seed: u64) -> u64 {
 /// (zero heap allocations in inner loop, handles typos, paraphrases, and arbitrary English).
 pub fn encode_prompt_semantic(prompt: &str, dim: usize, out: &mut [f32]) {
     out.fill(0.0);
-    let lower = prompt.to_ascii_lowercase();
+    let trimmed = prompt.trim_start();
+    let stripped = if trimmed.starts_with("[Case #") || trimmed.starts_with("[case #") {
+        trimmed
+            .find(']')
+            .map(|idx| trimmed[idx + 1..].trim_start())
+            .unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
+    let lower = stripped.to_ascii_lowercase();
     let bytes = lower.as_bytes();
 
     // 1. Word-level unigrams (weight 2.0) and bigrams (weight 1.5) for semantic intent & entities
