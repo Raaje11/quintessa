@@ -25,6 +25,9 @@ use quintessa::fluency_multimodal_layer::{
     synthesize_speech_to_wav, FluencyCompileExample, MODAL_AUDIO_TOKENS, MODAL_CANVAS_ELEMS,
 };
 use quintessa::multimodal_ncm::NcmModality;
+use quintessa::simulation_workspace::{
+    VoxelPrimitive, VoxelPrimitiveKind, VoxelSaciOp, VOXEL_COUNT, VOXEL_N,
+};
 
 fn parse_flag(args: &[String], flag: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
@@ -488,11 +491,12 @@ fn run_direct_safetensors_chat(args: &[String]) -> Result<(), Box<dyn std::error
 
     println!("=== ADA-o1 Interactive Chat (Loaded Directly from Pure Burn .safetensors) ===");
     println!(
-        "  Model   : {} ({} tensors, {:.2}M params, {} Hopfield-PKM slots, 42 SACI circuits, 8 engines)",
+        "  Model   : {} ({} tensors, {:.2}M params, {} Hopfield-PKM slots, {} SACI circuits, 8 engines)",
         model_path.display(),
         audit.total_tensors,
         (audit.total_params as f64) / 1e6,
-        model.memory.num_slots
+        model.memory.num_slots,
+        model.saci_descs.len()
     );
     println!("  Loaded  : {} ms (zero recompilation)", load_ms);
 
@@ -559,7 +563,173 @@ fn run_direct_safetensors_chat(args: &[String]) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+fn run_voxel_pixel_workspace_demo(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let t0 = Instant::now();
+    let model_path = PathBuf::from(
+        parse_flag(args, "--model")
+            .unwrap_or_else(|| r"D:\TRACR\output\ada_o1_insane.safetensors".to_string()),
+    );
+    let out_prefix = PathBuf::from(
+        parse_flag(args, "--out-prefix")
+            .or_else(|| parse_flag(args, "--voxel-demo"))
+            .unwrap_or_else(|| r"D:\TRACR\output\saci_torus_hub".to_string()),
+    );
+    let model = AdaO1InsaneModel::load_burn_safetensors(&model_path)
+        .map_err(|e| format!("Failed to load {}: {e:?}", model_path.display()))?;
+    let audit = model.audit_masked_training_budget();
+    let load_ms = t0.elapsed().as_millis();
+
+    println!("=== ADA-o1 Pure-SACI 3D Voxel + 2D Pixel Simulation Workspace ===");
+    println!(
+        "  Model   : {} ({} tensors, {:.2}M params, {} SACI circuits)",
+        model_path.display(),
+        audit.total_tensors,
+        (audit.total_params as f64) / 1e6,
+        model.saci_descs.len()
+    );
+    println!("  Loaded  : {} ms (zero recompilation)", load_ms);
+
+    // Arbitrary non-plate 3D shape sculpted strictly via `solver_44.saci` + `model.saci.voxel_conv3d.weight`:
+    // Torus(R=24, r=9) UNION HubSphere(r=14) SUBTRACT AxialBore(r=7) SUBTRACT 4x Radial Bolt Holes(r=3.5)
+    let ops = [
+        (
+            VoxelSaciOp::Union,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::Torus,
+                center_mm: [0.0, 0.0, 0.0],
+                params_mm: [24.0, 9.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Union,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::Sphere,
+                center_mm: [0.0, 0.0, 0.0],
+                params_mm: [14.0, 0.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Subtract,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::CylinderZ,
+                center_mm: [0.0, 0.0, 0.0],
+                params_mm: [7.0, 40.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Subtract,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::CylinderZ,
+                center_mm: [24.0, 0.0, 0.0],
+                params_mm: [3.5, 40.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Subtract,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::CylinderZ,
+                center_mm: [-24.0, 0.0, 0.0],
+                params_mm: [3.5, 40.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Subtract,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::CylinderZ,
+                center_mm: [0.0, 24.0, 0.0],
+                params_mm: [3.5, 40.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+        (
+            VoxelSaciOp::Subtract,
+            Some(VoxelPrimitive {
+                kind: VoxelPrimitiveKind::CylinderZ,
+                center_mm: [0.0, -24.0, 0.0],
+                params_mm: [3.5, 40.0, 0.0],
+            }),
+            0.0,
+            1,
+        ),
+    ];
+
+    let t_run = Instant::now();
+    let (vox, px, _carved) = model
+        .execute_voxel_pixel_workspace(40.0, &ops, true, None)
+        .map_err(|e| format!("Voxel/Pixel SACI execution failed: {e:?}"))?;
+    let run_ms = t_run.elapsed().as_millis();
+
+    let solid_voxels = vox.solid_voxel_count();
+    let vol_mm3 = vox.estimated_volume_mm3();
+    let f3d = vox.encode_to_ncm_field3d();
+    let f3d_l2: f32 = f3d.iter().map(|v| v * v).sum::<f32>().sqrt();
+
+    let stl_path = out_prefix.with_extension("stl");
+    let ppm_path = out_prefix.with_extension("ppm");
+    let (stl_bytes, stl_tris) = vox
+        .export_isosurface_binary_stl(&stl_path)
+        .map_err(|e| format!("Voxel STL export failed: {e:?}"))?;
+    let ppm_bytes = px
+        .write_ppm(&ppm_path)
+        .map_err(|e| format!("Pixel PPM export failed: {e:?}"))?;
+
+    println!(
+        "\n[Pure-SACI Execution ({} ms | solver_44.saci + voxel_conv3d + 2D SACI pixel pipeline)]",
+        run_ms
+    );
+    println!("  Shape       : Torus(R=24,r=9) U HubSphere(r=14) - AxialBore(r=7) - 4x BoltHoles(r=3.5) + Conv3D smooth");
+    println!(
+        "  Voxel Grid  : {VOXEL_N}x{VOXEL_N}x{VOXEL_N} ({VOXEL_COUNT} total) | Solid Voxels = {solid_voxels} | Est Volume = {vol_mm3:.1} mm^3 | Field3D4x4x4 L2 = {f3d_l2:.3}"
+    );
+    println!(
+        "  3D Mesh STL : {} ({} bytes, {} watertight triangles)",
+        stl_path.display(),
+        stl_bytes,
+        stl_tris
+    );
+    println!(
+        "  2D Pixel PPM: {} ({} bytes, 64x64 RGB after SACI color+conv3x3+curve+alpha)",
+        ppm_path.display(),
+        ppm_bytes
+    );
+
+    println!("\n  [24x24 Mid-Plane Z=0 Voxel Cross-Section (from Simulation Workspace)]:");
+    let iz = VOXEL_N / 2;
+    for iy in 0..VOXEL_N {
+        let mut row = String::with_capacity(VOXEL_N * 2);
+        for ix in 0..VOXEL_N {
+            let v = vox.sdf[quintessa::simulation_workspace::VoxelWorkspace3D::idx(ix, iy, iz)];
+            if v <= 0.0 {
+                row.push_str("##");
+            } else if v < 2.5 {
+                row.push_str("..");
+            } else {
+                row.push_str("  ");
+            }
+        }
+        println!("    |{row}|");
+    }
+
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.first().map(|s| s.as_str()) == Some("workspace")
+        || parse_flag(args, "--voxel-demo").is_some()
+    {
+        return run_voxel_pixel_workspace_demo(args);
+    }
     if args.first().map(|s| s.as_str()) == Some("chat")
         || has_flag(args, "--chat")
         || has_flag(args, "--interactive")
