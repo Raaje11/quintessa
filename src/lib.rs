@@ -32,6 +32,7 @@ pub mod ncm_generator;
 pub mod observatory;
 pub mod operand_grounding;
 pub mod primitives;
+pub mod pure_ada_model;
 pub mod runtime;
 pub mod saci_circuit;
 pub mod saci_compiler;

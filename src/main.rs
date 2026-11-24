@@ -69,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "infer" => cli::infer::run(&args[2..]),
         "inspect" => cli::inspect::run(&args[2..]),
         "lm" => cli::lm::run(&args[2..]),
+        "pure-ada" => cli::pure_ada::run(&args[2..]),
         "scale" => cli::scale::run(&args[2..]),
         "studio" => cli::studio::run(&args[2..]),
         "workflow" => cli::workflow::run(&args[2..]),

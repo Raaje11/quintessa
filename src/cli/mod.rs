@@ -6,6 +6,7 @@ pub mod fluency;
 pub mod infer;
 pub mod inspect;
 pub mod lm;
+pub mod pure_ada;
 pub mod scale;
 pub mod studio;
 pub mod workflow;
