@@ -84,6 +84,9 @@ use crate::saci_compiler::{
 use crate::safetensors_writer::{
     read_safetensors, write_mixed_safetensors, TypedNamedTensor, WeightDtype,
 };
+use crate::simulation_workspace::{
+    PixelWorkspace2D, VoxelPrimitive, VoxelSaciOp, VoxelWorkspace3D,
+};
 use crate::statistical_lm::{
     dequantize_i8_per_row, quantize_i8_per_row, CompiledStatisticalLm, ScaledI8Matrix,
     CONTEXT_WINDOW,
@@ -96,7 +99,7 @@ pub const ADA_O1_ETF_NEURONS: usize = 256; // 1024 4-family features
 pub const ADA_O1_KDA_LAYERS: usize = 6;
 pub const ADA_O1_MLA_LAYERS: usize = 2;
 pub const ADA_O1_MLA_LATENT: usize = 64;
-pub const ADA_O1_TOTAL_TENSORS: usize = 101;
+pub const ADA_O1_TOTAL_TENSORS: usize = 102;
 
 /// All 8 `ada_engines` domain computational engines compiled into pure `F32` weight matrices
 /// and actively executed in `forward_all`.
@@ -742,6 +745,8 @@ pub struct AdaO1InsaneModel {
     pub cad_fea_coeffs: Vec<f32>,
     /// `[10, ADA_O1_DIM]` F32 neural B-Rep parameter decoder head from Brain Simulation slot.
     pub cad_brep_head: Vec<f32>,
+    /// `[3, 3, 3]` (27) F32 pure-weight 3D SACI voxel smoothing/filleting convolution kernel.
+    pub saci_voxel_conv3d: Vec<f32>,
 }
 
 /// Complete telemetry & multimodal output from a single `AdaO1InsaneModel::forward_all` / `forward_with_cad_workspace` execution.
@@ -972,6 +977,8 @@ impl AdaO1InsaneModel {
                     ((((r + 1) * (c + 3)) as f32 * 0.13).sin()) / (ADA_O1_DIM as f32).sqrt();
             }
         }
+        let mut saci_voxel_conv3d = vec![1.0_f32 / 34.0; 27];
+        saci_voxel_conv3d[13] = 8.0 / 34.0;
 
         Ok(Self {
             ncm,
@@ -995,7 +1002,47 @@ impl AdaO1InsaneModel {
             cad_material_table,
             cad_fea_coeffs,
             cad_brep_head,
+            saci_voxel_conv3d,
         })
+    }
+
+    /// Execute pure-SACI 3D Voxel CSG / 3D Conv smoothing / FEA Topology Optimization + 2D Pixel
+    /// Simulation Workspace strictly through loaded `.safetensors` weights (`solver_44.saci`,
+    /// `solver_45.saci`, `model.saci.voxel_conv3d.weight`, `model.saci.color.*`, `conv3x3`, `curve`, `alpha`).
+    pub fn execute_voxel_pixel_workspace(
+        &self,
+        half_extent_mm: f32,
+        ops: &[(VoxelSaciOp, Option<VoxelPrimitive>, f32, u8)],
+        apply_3d_smooth: bool,
+        topo_carve_threshold_mpa: Option<f32>,
+    ) -> Result<(VoxelWorkspace3D, PixelWorkspace2D, usize), ErrorCode> {
+        let d44 = self
+            .saci_descs
+            .iter()
+            .find(|d| d.circuit_id == 44)
+            .ok_or(ErrorCode::InvalidArchitecture)?;
+        let mut vox = VoxelWorkspace3D::new_empty(half_extent_mm);
+        for &(op, prim, shell_t, mat_id) in ops {
+            vox.apply_saci_csg_op(&self.saci_ckpt, d44, op, prim, shell_t, mat_id)?;
+        }
+        if apply_3d_smooth {
+            vox.apply_saci_conv3d(&self.saci_voxel_conv3d)?;
+        }
+        let mut carved = 0usize;
+        if let Some(thr) = topo_carve_threshold_mpa {
+            if let Some(d45) = self.saci_descs.iter().find(|d| d.circuit_id == 45) {
+                carved = vox.apply_saci_topology_optimize(&self.saci_ckpt, d45, thr)?;
+            }
+        }
+        let mut px = PixelWorkspace2D::new_blank();
+        vox.render_midplane_to_pixel_workspace(&mut px);
+        px.apply_saci_pixel_pass(
+            &self.saci_color,
+            &self.saci_conv,
+            &self.saci_curve,
+            &self.saci_alpha,
+        );
+        Ok((vox, px, carved))
     }
 
     /// Execute **100% of the model's 101 tensors** in one unified cognitive + multimodal pass.
@@ -1815,8 +1862,10 @@ impl AdaO1InsaneModel {
             + ncm_trainable_params
             + stat_lm_params
             + self.cad_brep_head.len();
-        let frozen_perfect_params =
-            frozen_perfect_params + self.cad_material_table.len() + self.cad_fea_coeffs.len();
+        let frozen_perfect_params = frozen_perfect_params
+            + self.cad_material_table.len()
+            + self.cad_fea_coeffs.len()
+            + self.saci_voxel_conv3d.len();
         let total_params = frozen_perfect_params + trainable_backbone_params;
 
         // Memory footprint for masked training (batch=16, seq=64, dim=128):
@@ -1829,7 +1878,7 @@ impl AdaO1InsaneModel {
 
         AdaO1MaskedTrainingAudit {
             total_tensors: ADA_O1_TOTAL_TENSORS,
-            frozen_tensors: 70,
+            frozen_tensors: 71,
             trainable_tensors: 31,
             total_params,
             frozen_perfect_params,
@@ -1925,6 +1974,7 @@ impl AdaO1InsaneModel {
             + sum_f32(&self.memory.w_pkm_k2)
             + sum_f32(&self.cad_material_table)
             + sum_f32(&self.cad_fea_coeffs)
+            + sum_f32(&self.saci_voxel_conv3d)
     }
 
     /// **Pure Burn Rust Masked Feature Trainer (`train_masked_features_burn_rust`):**
@@ -2230,7 +2280,7 @@ impl AdaO1InsaneModel {
 
         Ok(AdaO1MaskedTrainingReport {
             steps_run: steps,
-            frozen_tensors_locked: 70,
+            frozen_tensors_locked: 71,
             frozen_perfect_drift,
             brain_channels_total: d,
             brain_channels_trained: brain_k_train,
@@ -2783,6 +2833,12 @@ impl AdaO1InsaneModel {
             WeightDtype::F32,
             to_f64(&self.cad_brep_head),
         ));
+        owned.push((
+            String::from("model.saci.voxel_conv3d.weight"),
+            vec![3, 3, 3],
+            WeightDtype::F32,
+            to_f64(&self.saci_voxel_conv3d),
+        ));
 
         for entry in &mut owned {
             if entry.2 != WeightDtype::I8 {
@@ -3129,10 +3185,11 @@ impl AdaO1InsaneModel {
             w_pkm_k2: to_f32(&pkm2_t.data),
         };
 
-        // 10. In-Model CAD B-Rep & FEA Physics Tensors (3 tensors)
+        // 10. In-Model CAD B-Rep, FEA Physics & 3D Voxel SACI Conv Tensors (4 tensors)
         let cad_material_table = to_f32(&find("model.cad_brep.material_table.weight")?.data);
         let cad_fea_coeffs = to_f32(&find("model.cad_brep.fea_bilinear.weight")?.data);
         let cad_brep_head = to_f32(&find("model.cad_brep.field3d_decoder.weight")?.data);
+        let saci_voxel_conv3d = to_f32(&find("model.saci.voxel_conv3d.weight")?.data);
 
         Ok(Self {
             ncm,
@@ -3156,6 +3213,7 @@ impl AdaO1InsaneModel {
             cad_material_table,
             cad_fea_coeffs,
             cad_brep_head,
+            saci_voxel_conv3d,
         })
     }
 }
@@ -3193,7 +3251,7 @@ mod tests {
         let train_rep = model
             .train_masked_features_burn_rust(corpus, &examples, 10, 0.35)
             .unwrap();
-        assert_eq!(train_rep.frozen_tensors_locked, 70);
+        assert_eq!(train_rep.frozen_tensors_locked, 71);
         assert!(train_rep.frozen_perfect_drift <= 1e-12);
         assert!(train_rep.brain_mse_after <= train_rep.brain_mse_before);
         assert!(train_rep.ncm_mse_after <= train_rep.ncm_mse_before);
@@ -3219,7 +3277,7 @@ mod tests {
         assert!(out_reloaded
             .assistant_response
             .contains("Signed Distance Functions"));
-        assert_eq!(out_reloaded.engines_telemetry.saci_circuits_executed, 44);
+        assert_eq!(out_reloaded.engines_telemetry.saci_circuits_executed, 46);
         assert!(out_reloaded.ponder_halted_verified);
 
         let out = model.forward_all(
@@ -3229,7 +3287,7 @@ mod tests {
         assert!(out.assistant_response.contains("Signed Distance Functions"));
         assert!(out.active_etf_neurons > 0);
         assert!(out.ponder_halted_verified);
-        assert_eq!(out.engines_telemetry.saci_circuits_executed, 44);
+        assert_eq!(out.engines_telemetry.saci_circuits_executed, 46);
         assert!((out.engines_telemetry.causal_scm_ate - 3.0).abs() < 1e-4);
         assert!((out.engines_telemetry.spreadsheet_gross_margin_pct - 40.0).abs() < 1e-4);
         assert!((out.engines_telemetry.workbook_dag_pnl_total - 200.0).abs() < 1e-4);

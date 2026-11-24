@@ -1,0 +1,16 @@
+[saci]
+format_version = 1
+circuit_id = 45
+[interface]
+input_count = 3
+output_count = 2
+[numerical]
+absolute_tolerance = 1e-9
+steepness_k = 1000000.0
+[graph]
+INPUT 0
+INPUT 1
+INPUT 2
+NODE 3 CMP_LT 0,1
+NODE 4 SUB 3,2
+OUTPUTS 3,4

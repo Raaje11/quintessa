@@ -41,6 +41,7 @@ pub mod semantic_data;
 pub mod semantic_wsp;
 pub mod sequence_encoder;
 pub mod sharded_compiler;
+pub mod simulation_workspace;
 pub mod solvers;
 pub mod statistical_lm;
 pub mod superposition_wsp;
