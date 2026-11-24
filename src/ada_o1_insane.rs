@@ -54,7 +54,7 @@ use crate::ada_compiler::{
     compile_saci_conv3x3, compile_saci_tone_curve, AdaBlendMode, AdaSimulationCanvasWeights,
     PureBilinearGateF32, PureConv2dF32, PureCurveMlpF32, PureLinearF32, SaciPrimitiveKind,
 };
-use crate::checkpoint::Checkpoint;
+use crate::checkpoint::{Checkpoint, TensorDescriptor};
 use crate::compiler_passes::{
     promote_outlier_dtype, synthesize_ndim_rope_inv_freq, NullspaceProjector,
     DEFAULT_OUTLIER_PROMOTE_ABS,
@@ -69,13 +69,13 @@ use crate::knowledge_base::{
     KbSample, PureWeightAdaModel, KB_DIM, KB_NUM_DOMAINS,
 };
 use crate::multimodal_ncm::{
-    DecodedNcmOutput, EncodedNcmConcept, MultimodalNcmCodec, NcmModality, NCM_ATTN_HEADS,
-    NCM_NUM_MODALITIES, NCM_REL_POS_LEN,
+    DecodedNcmOutput, EncodedNcmConcept, MultimodalNcmCodec, NcmModality, NcmPyramidLevel,
+    NCM_ATTN_HEADS, NCM_NUM_MODALITIES, NCM_REL_POS_LEN,
 };
 use crate::ncm_generator::NCM_CHUNK_LEN;
 use crate::saci_compiler::{
     compile_saci_program, execute_saci_circuit, load_saci_binary, parse_saci_source,
-    SaciCircuitDescriptor, SacisubstrateAllocator,
+    NumericPrecision, SaciCircuitDescriptor, SacisubstrateAllocator, TopologyKind,
 };
 use crate::safetensors_writer::{
     read_safetensors, write_mixed_safetensors, TypedNamedTensor, WeightDtype,
@@ -85,7 +85,7 @@ use crate::statistical_lm::{
     CONTEXT_WINDOW,
 };
 use crate::superposition_wsp::SplitMix64;
-use crate::sys::{ErrorCode, TensorId};
+use crate::sys::{AdaComponent, ErrorCode, TensorId};
 
 pub const ADA_O1_DIM: usize = 128;
 pub const ADA_O1_ETF_NEURONS: usize = 256; // 1024 4-family features
@@ -2511,6 +2511,327 @@ impl AdaO1InsaneModel {
         let params: usize = loaded.iter().map(|t| t.data.len()).sum();
         Ok((loaded.len(), params))
     }
+
+    /// Load a complete 98-tensor `AdaO1InsaneModel` directly from a pure Burn `.safetensors` file
+    /// (e.g. `D:\TRACR\output\ada_o1_insane.safetensors`) for instant chat & inference with zero recompilation.
+    pub fn load_burn_safetensors(path: &Path) -> Result<Self, ErrorCode> {
+        let loaded = read_safetensors(path).map_err(|_| ErrorCode::IoError)?;
+        let find = |name: &str| {
+            loaded
+                .iter()
+                .find(|t| t.name == name)
+                .ok_or(ErrorCode::ShapeMismatch)
+        };
+        let to_f32 = |v: &[f64]| -> Vec<f32> { v.iter().map(|&x| x as f32).collect() };
+        let d = ADA_O1_DIM;
+
+        // 1. Multimodal NCM Pyramid + Procrustes + Cross-Attention (32 tensors)
+        let mut pyramid = Vec::with_capacity(8);
+        let mut codebook_size = 256usize;
+        for k in 0..8 {
+            let down = find(&format!("model.ncm.pyramid.{k}.down.weight"))?;
+            let cb = find(&format!("model.ncm.pyramid.{k}.codebook.weight"))?;
+            let up = find(&format!("model.ncm.pyramid.{k}.up.weight"))?;
+            if down.shape.len() != 2 || cb.shape.len() != 2 || up.shape.len() != 2 {
+                return Err(ErrorCode::ShapeMismatch);
+            }
+            codebook_size = cb.shape[0];
+            pyramid.push(NcmPyramidLevel {
+                level_len: down.shape[1],
+                codebook_size,
+                down_w: down.data.clone(),
+                codebook: cb.data.clone(),
+                up_w: up.data.clone(),
+            });
+        }
+        let w_exp_t = find("model.ncm.w_exp.weight")?;
+        if w_exp_t.shape.len() != 2 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let ncm = MultimodalNcmCodec {
+            dim: d,
+            exp_dim: w_exp_t.shape[1],
+            codebook_size,
+            pyramid,
+            procrustes_in: find("model.ncm.procrustes_in.weight")?.data.clone(),
+            procrustes_out: find("model.ncm.procrustes_out.weight")?.data.clone(),
+            w_ncm_exp: w_exp_t.data.clone(),
+            w_ncm_out: find("model.ncm.w_out.weight")?.data.clone(),
+            modality_rel_pos_bias: find("model.ncm.modality_rel_pos_bias")?.data.clone(),
+            w_q_attn: find("model.ncm.w_q_attn.weight")?.data.clone(),
+            w_k_attn: find("model.ncm.w_k_attn.weight")?.data.clone(),
+            w_v_attn: find("model.ncm.w_v_attn.weight")?.data.clone(),
+        };
+
+        // 2. ADA-o1 6 KDA + 2 MLA + 4-Family ETF Brain (11 tensors)
+        let brain = AdaO1BrainWeights {
+            etf_basis: find("model.brain.etf_basis.weight")?.data.clone(),
+            rope_3d_inv_freq: find("model.brain.rotary_emb.inv_freq")?.data.clone(),
+            kda_q_proj: find("model.brain.kda.q_proj.weight")?.data.clone(),
+            kda_k_proj: find("model.brain.kda.k_proj.weight")?.data.clone(),
+            kda_v_proj: find("model.brain.kda.v_proj.weight")?.data.clone(),
+            kda_o_proj: find("model.brain.kda.o_proj.weight")?.data.clone(),
+            kda_alpha_decay: find("model.brain.kda.alpha_decay")?.data.clone(),
+            mla_kv_down: find("model.brain.mla.kv_down.weight")?.data.clone(),
+            mla_kv_up: find("model.brain.mla.kv_up.weight")?.data.clone(),
+            mla_qo_proj: find("model.brain.mla.qo_proj.weight")?.data.clone(),
+            brain_norm: find("model.brain.norm.weight")?.data.clone(),
+        };
+
+        // 3. Pure-Weight SACI Computational Engine Bank (15 tensors)
+        let saci_color = PureLinearF32 {
+            out_dim: 3,
+            in_dim: 3,
+            weight: to_f32(&find("model.saci.color.weight")?.data),
+            bias: to_f32(&find("model.saci.color.bias")?.data),
+        };
+        let saci_conv = PureConv2dF32 {
+            channels: 3,
+            kernel_size: 3,
+            weight: to_f32(&find("model.saci.conv3x3.weight")?.data),
+        };
+        let saci_mul = PureBilinearGateF32 {
+            in_dim: 6,
+            hidden_dim: 3,
+            out_dim: 3,
+            w_gate: to_f32(&find("model.saci.blend_mul.w_gate.weight")?.data),
+            w_up: to_f32(&find("model.saci.blend_mul.w_up.weight")?.data),
+            w_down: to_f32(&find("model.saci.blend_mul.w_down.weight")?.data),
+            w_skip: vec![0.0_f32; 18],
+        };
+        let saci_screen = PureBilinearGateF32 {
+            in_dim: 6,
+            hidden_dim: 3,
+            out_dim: 3,
+            w_gate: to_f32(&find("model.saci.blend_screen.w_gate.weight")?.data),
+            w_up: to_f32(&find("model.saci.blend_screen.w_up.weight")?.data),
+            w_down: to_f32(&find("model.saci.blend_screen.w_down.weight")?.data),
+            w_skip: to_f32(&find("model.saci.blend_screen.w_skip.weight")?.data),
+        };
+        let saci_alpha = PureBilinearGateF32 {
+            in_dim: 7,
+            hidden_dim: 3,
+            out_dim: 3,
+            w_gate: to_f32(&find("model.saci.blend_alpha.w_gate.weight")?.data),
+            w_up: to_f32(&find("model.saci.blend_alpha.w_up.weight")?.data),
+            w_down: to_f32(&find("model.saci.blend_alpha.w_down.weight")?.data),
+            w_skip: to_f32(&find("model.saci.blend_alpha.w_skip.weight")?.data),
+        };
+        let curve_t = find("model.saci.tone_curve.knots.weight")?;
+        if curve_t.shape.len() != 2 || curve_t.shape[0] != 3 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let num_knots = curve_t.shape[1];
+        let saci_curve = PureCurveMlpF32 {
+            num_knots,
+            w_in: to_f32(&curve_t.data[0..num_knots]),
+            b_in: to_f32(&curve_t.data[num_knots..2 * num_knots]),
+            w_out: to_f32(&curve_t.data[2 * num_knots..3 * num_knots]),
+            b_out: 0.0_f32,
+        };
+
+        // 4. All 42 Compiled Declarative `.saci` Solver Circuits (2 tensors)
+        let arena_data = find("model.saci.circuits.arena.weight")?.data.clone();
+        let arena_len = arena_data.len();
+        let saci_ckpt = Checkpoint::new(
+            vec![TensorDescriptor {
+                id: TensorId(5),
+                component: AdaComponent::SaciCircuits,
+                rows: arena_len,
+                cols: 1,
+                offset: 0,
+                len: arena_len,
+                frozen: true,
+            }],
+            arena_data,
+        )?;
+        let meta_t = find("model.saci.circuits.meta.weight")?;
+        if meta_t.shape.len() != 2 || meta_t.shape[1] != 6 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let saci_meta_flat = meta_t.data.clone();
+        let n_circuits = meta_t.shape[0];
+        let mut saci_descs = Vec::with_capacity(n_circuits);
+        for ci in 0..n_circuits {
+            let m = &saci_meta_flat[ci * 6..(ci + 1) * 6];
+            let circuit_id = m[0].round().max(0.0) as u32;
+            let topology = match m[1].round() as u8 {
+                0 => TopologyKind::Linear,
+                1 => TopologyKind::MultiLayerRelu,
+                2 => TopologyKind::Sparse,
+                3 => TopologyKind::MultiBranch,
+                4 => TopologyKind::Recurrent,
+                _ => TopologyKind::MultiLayerRelu,
+            };
+            let weight_offset = m[2].round().max(0.0) as u64;
+            let weight_count = m[3].round().max(0.0) as u64;
+            let input_count = m[4].round().max(1.0) as u32;
+            let output_count = m[5].round().max(1.0) as u32;
+            let layer_dims = if topology == TopologyKind::Linear {
+                vec![input_count, output_count]
+            } else {
+                let denom = (input_count + 1 + output_count).max(1) as u64;
+                let h = (weight_count / denom).max(1) as u32;
+                vec![input_count, h, output_count]
+            };
+            saci_descs.push(SaciCircuitDescriptor {
+                circuit_id,
+                topology,
+                layer_dims,
+                neuron_ids: Vec::new(),
+                weight_offset,
+                weight_count,
+                input_count,
+                output_count,
+                precision: NumericPrecision::F32,
+                absolute_tolerance: 1e-6,
+            });
+        }
+
+        // 5. 4-Step Aligned WSP Knowledge/Reasoning/SACI-Router/Simulation Engine (12 tensors)
+        let vh = &find("model.wsp_kb.verify_halt.weight")?.data;
+        if vh.len() < 4 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let wsp_kb = PureWeightAdaModel {
+            w_gate: find("model.wsp_kb.w_gate.weight")?.data.clone(),
+            b_gate: find("model.wsp_kb.b_gate.weight")?.data.clone(),
+            w_knowledge: find("model.wsp_kb.w_knowledge.weight")?.data.clone(),
+            w_reasoning: find("model.wsp_kb.w_reasoning.weight")?.data.clone(),
+            w_saci_route: find("model.wsp_kb.w_saci_route.weight")?.data.clone(),
+            w_saci_facts: find("model.wsp_kb.w_saci_facts.weight")?.data.clone(),
+            w_simulation: find("model.wsp_kb.w_simulation.weight")?.data.clone(),
+            p_knowledge: find("model.wsp_kb.p_knowledge.weight")?.data.clone(),
+            p_reasoning: find("model.wsp_kb.p_reasoning.weight")?.data.clone(),
+            p_saci: find("model.wsp_kb.p_saci.weight")?.data.clone(),
+            p_simulation: find("model.wsp_kb.p_simulation.weight")?.data.clone(),
+            verify_bias: vh[0],
+            w_halt: [vh[1], vh[2]],
+            b_halt: vh[3],
+        };
+
+        // 6. All 8 `ada_engines` Domain Computational Engines + Shared SACI Transfer Matrix (9 tensors)
+        let engines = AdaO1DomainEngines {
+            cad_sdf_csg: to_f32(&find("model.engines.cad_sdf_csg.weight")?.data),
+            cad_newton_jacobian: to_f32(&find("model.engines.cad_newton_jacobian.weight")?.data),
+            causal_scm_do: to_f32(&find("model.engines.causal_scm_do.weight")?.data),
+            sql_relational: to_f32(&find("model.engines.sql_relational.weight")?.data),
+            egraph_rewrite: to_f32(&find("model.engines.egraph_rewrite.weight")?.data),
+            spreadsheet_quant: to_f32(&find("model.engines.spreadsheet_quant.weight")?.data),
+            workbook_dag_topo: to_f32(&find("model.engines.workbook_dag_topo.weight")?.data),
+            tool_schema_rubric: to_f32(&find("model.engines.tool_schema_rubric.weight")?.data),
+            saci_transfer_matrix: to_f32(&find("model.saci.transfer_matrix.weight")?.data),
+        };
+
+        // 7. Simulation Canvas & PonderNet Halting Gate (4 tensors)
+        let sim_canvas = AdaSimulationCanvasWeights {
+            engine_dim: 3,
+            canvas_dim: d,
+            obs_dim: 3,
+            write_proj: PureLinearF32 {
+                out_dim: d,
+                in_dim: 3,
+                weight: to_f32(&find("model.simulation.write_proj.weight")?.data),
+                bias: vec![0.0_f32; d],
+            },
+            read_proj: PureLinearF32 {
+                out_dim: 3,
+                in_dim: d,
+                weight: to_f32(&find("model.simulation.read_proj.weight")?.data),
+                bias: vec![0.0_f32; 3],
+            },
+            verify_proj: PureLinearF32 {
+                out_dim: 1,
+                in_dim: 3,
+                weight: to_f32(&find("model.simulation.verify_proj.weight")?.data),
+                bias: vec![0.0_f32; 1],
+            },
+        };
+        let ponder_halt_w = to_f32(&find("model.simulation.ponder_halt.weight")?.data);
+        let ponder_halt_b = 0.85_f32;
+
+        // 8. Statistical WSP + Scaled I8 + Per-Neuron Refined LM (5 tensors)
+        let emb_t = find("model.stat_lm.embed_tokens.weight")?;
+        let up_w_t = find("model.stat_lm.up_proj.weight")?;
+        let up_s_t = find("model.stat_lm.up_proj.scale")?;
+        let up_b_t = find("model.stat_lm.up_proj.bias")?;
+        let head_t = find("model.stat_lm.lm_head.weight")?;
+        if emb_t.shape.len() != 2 || up_w_t.shape.len() != 2 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let vocab_size = emb_t.shape[0];
+        let emb_dim = emb_t.shape[1];
+        let hidden_neurons = up_w_t.shape[0];
+        let in_dim = up_w_t.shape[1];
+        let w_hidden = dequantize_i8_per_row(&ScaledI8Matrix {
+            rows: hidden_neurons,
+            cols: in_dim,
+            q_data: up_w_t.data.clone(),
+            row_scales: to_f32(&up_s_t.data),
+        });
+        let mut vocab = Vec::with_capacity(vocab_size);
+        vocab.push(String::from("<unk>"));
+        for i in 1..vocab_size {
+            vocab.push(format!("tok_{i}"));
+        }
+        let stat_lm = CompiledStatisticalLm {
+            vocab,
+            emb_dim,
+            hidden_neurons,
+            embed_tokens: emb_t.data.clone(),
+            w_hidden,
+            b_hidden: up_b_t.data.clone(),
+            w_readout: head_t.data.clone(),
+        };
+
+        // 9. Hopfield-PKM Conversational & Multimodal Memory (8 tensors)
+        let keys_t = find("model.memory.keys.weight")?;
+        let seq_t = find("model.memory.values_seq.weight")?;
+        let canvas_t = find("model.memory.values_canvas.weight")?;
+        let audio_t = find("model.memory.values_audio.weight")?;
+        let dom_t = find("model.memory.values_domain.weight")?;
+        let pkm1_t = find("model.memory.pkm_k1.weight")?;
+        let pkm2_t = find("model.memory.pkm_k2.weight")?;
+        let beta_t = find("model.memory.beta")?;
+        if keys_t.shape.len() != 2 || seq_t.shape.len() != 2 || pkm1_t.shape.len() != 2 {
+            return Err(ErrorCode::ShapeMismatch);
+        }
+        let memory = UnifiedFluencyMultimodalLayer {
+            num_slots: keys_t.shape[0],
+            dim: keys_t.shape[1],
+            max_seq_len: seq_t.shape[1],
+            beta: beta_t.data.first().copied().unwrap_or(36.0) as f32,
+            w_key: to_f32(&keys_t.data),
+            w_val_tokens: to_f32(&seq_t.data),
+            w_val_canvas: to_f32(&canvas_t.data),
+            w_val_audio: to_f32(&audio_t.data),
+            w_val_domain: to_f32(&dom_t.data),
+            pkm_side: pkm1_t.shape[0],
+            w_pkm_k1: to_f32(&pkm1_t.data),
+            w_pkm_k2: to_f32(&pkm2_t.data),
+        };
+
+        Ok(Self {
+            ncm,
+            brain,
+            saci_color,
+            saci_conv,
+            saci_mul,
+            saci_screen,
+            saci_alpha,
+            saci_curve,
+            saci_ckpt,
+            saci_descs,
+            saci_meta_flat,
+            wsp_kb,
+            engines,
+            sim_canvas,
+            ponder_halt_w,
+            ponder_halt_b,
+            stat_lm,
+            memory,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -2561,7 +2882,19 @@ mod tests {
         let (loaded_t, loaded_p) = AdaO1InsaneModel::verify_saved_tensors(&path).unwrap();
         assert_eq!(loaded_t, ADA_O1_TOTAL_TENSORS);
         assert_eq!(loaded_p, n_params);
+
+        let reloaded = AdaO1InsaneModel::load_burn_safetensors(&path).unwrap();
         let _ = std::fs::remove_file(&path);
+
+        let out_reloaded = reloaded.forward_all(
+            "how does parametric cad work with signed distance fields",
+            NcmModality::VisualCad8x8,
+        );
+        assert!(out_reloaded
+            .assistant_response
+            .contains("Signed Distance Functions"));
+        assert_eq!(out_reloaded.engines_telemetry.saci_circuits_executed, 42);
+        assert!(out_reloaded.ponder_halted_verified);
 
         let out = model.forward_all(
             "how does parametric cad work with signed distance fields",

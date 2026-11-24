@@ -11,6 +11,7 @@
 //!   `Trainable` (backbone/readout) parameters and peak VRAM/RAM training budget on local hardware.
 
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -23,6 +24,10 @@ use quintessa::multimodal_ncm::NcmModality;
 
 fn parse_flag(args: &[String], flag: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
 }
 
 const DIALOGUE_SEEDS: [(&str, &str, u8); 16] = [
@@ -312,7 +317,152 @@ fn render_ascii_canvas_row(canvas: &[f32; MODAL_CANVAS_ELEMS], y: usize) -> Stri
     s
 }
 
+fn infer_modality_for_prompt(prompt: &str) -> NcmModality {
+    let lower = prompt.to_ascii_lowercase();
+    if lower.contains("cad")
+        || lower.contains("plate")
+        || lower.contains("sdf")
+        || lower.contains("csg")
+        || lower.contains("solvespace")
+        || lower.contains("canvas")
+    {
+        NcmModality::VisualCad8x8
+    } else if lower.contains("voice") || lower.contains("audio") || lower.contains("photo") {
+        NcmModality::AudioRvq64
+    } else if lower.contains("sql")
+        || lower.contains("scm")
+        || lower.contains("e-graph")
+        || lower.contains("saci")
+        || lower.contains("mean")
+        || lower.contains("deviation")
+    {
+        NcmModality::Field3D4x4x4
+    } else {
+        NcmModality::TextChunk64
+    }
+}
+
+fn print_chat_turn_output(
+    model: &AdaO1InsaneModel,
+    prompt: &str,
+    voice_out: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mod_kind = infer_modality_for_prompt(prompt);
+    let t_q = Instant::now();
+    let out = model.forward_all(prompt, mod_kind);
+    let q_us = t_q.elapsed().as_micros();
+    let et = &out.engines_telemetry;
+
+    println!(
+        "\nada-o1 [modality={} | {} us | ETF={}/256 | SACI={}/42 | Ponder={}]>",
+        mod_kind.as_str(),
+        q_us,
+        out.active_etf_neurons,
+        et.saci_circuits_executed,
+        if out.ponder_halted_verified {
+            "HALTED_VERIFIED"
+        } else {
+            "CONTINUE"
+        }
+    );
+    println!("  {}", out.assistant_response);
+    println!(
+        "  [Telemetry] WSP_KB dom={} (ver={}) | SimVerify={:.4} | CAD_CSG={:.3} | GM={:.1}% | DAG_PnL={:.0} | SCM_ATE={:.2}",
+        et.wsp_kb_routed_domain,
+        et.wsp_kb_verified,
+        out.simulation_verify_score,
+        et.cad_csg_fill_score,
+        et.spreadsheet_gross_margin_pct,
+        et.workbook_dag_pnl_total,
+        et.causal_scm_ate
+    );
+
+    if mod_kind == NcmModality::VisualCad8x8 {
+        println!("  [8x8 Simulation Canvas Cross-Section]:");
+        for y in 0..8 {
+            println!(
+                "    |{}|",
+                render_ascii_canvas_row(&out.hopfield_out.canvas_8x8, y)
+            );
+        }
+    }
+
+    if let Some(wav_path) = voice_out {
+        let (_, dur_s) = synthesize_speech_to_wav(
+            &out.assistant_response,
+            &out.hopfield_out.audio_rvq_tokens,
+            wav_path,
+        )
+        .map_err(|e| format!("WAV failed: {e:?}"))?;
+        println!(
+            "  [Voice WAV] {} ({:.2}s @ 24kHz)",
+            wav_path.display(),
+            dur_s
+        );
+    }
+
+    Ok(())
+}
+
+fn run_direct_safetensors_chat(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let t0 = Instant::now();
+    let model_path = PathBuf::from(
+        parse_flag(args, "--model")
+            .unwrap_or_else(|| r"D:\TRACR\output\ada_o1_insane.safetensors".to_string()),
+    );
+    let model = AdaO1InsaneModel::load_burn_safetensors(&model_path)
+        .map_err(|e| format!("Failed to load {}: {e:?}", model_path.display()))?;
+    let audit = model.audit_masked_training_budget();
+    let load_ms = t0.elapsed().as_millis();
+
+    println!("=== ADA-o1 Interactive Chat (Loaded Directly from Pure Burn .safetensors) ===");
+    println!(
+        "  Model   : {} ({} tensors, {:.2}M params, {} Hopfield-PKM slots, 42 SACI circuits, 8 engines)",
+        model_path.display(),
+        audit.total_tensors,
+        (audit.total_params as f64) / 1e6,
+        model.memory.num_slots
+    );
+    println!("  Loaded  : {} ms (zero recompilation)", load_ms);
+
+    let voice_path = parse_flag(args, "--wav").map(PathBuf::from);
+    if let Some(prompt) = parse_flag(args, "--prompt") {
+        println!("\nyou> {prompt}");
+        return print_chat_turn_output(&model, &prompt, voice_path.as_deref());
+    }
+
+    println!("Type any question (CAD plate, Causal SCM, SQL, Gross Margin, NPV, Mean/StdDev, Tool-Use, or Architecture) or 'exit' to quit.");
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut line = String::new();
+    loop {
+        print!("\nyou> ");
+        io::stdout().flush()?;
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let prompt = line.trim();
+        if prompt.is_empty() {
+            continue;
+        }
+        if prompt.eq_ignore_ascii_case("exit") || prompt.eq_ignore_ascii_case("quit") {
+            break;
+        }
+        print_chat_turn_output(&model, prompt, voice_path.as_deref())?;
+    }
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.first().map(|s| s.as_str()) == Some("chat")
+        || has_flag(args, "--chat")
+        || has_flag(args, "--interactive")
+        || parse_flag(args, "--prompt").is_some()
+    {
+        return run_direct_safetensors_chat(args);
+    }
+
     let t0 = Instant::now();
     let out_path = PathBuf::from(
         parse_flag(args, "--out")
