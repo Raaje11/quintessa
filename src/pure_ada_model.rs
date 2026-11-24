@@ -28,6 +28,10 @@ pub const PURE_VOCAB: usize = 260; // 0..256 raw UTF-8 bytes + 256=BOS, 257=EOS,
 pub const PURE_BOS: u16 = 256;
 pub const PURE_EOS: u16 = 257;
 pub const PURE_SEP: u16 = 258;
+pub const PURE_PAD: u16 = 259;
+
+/// Parallel NCM output chunk length: all 64 output token slots decoded in 1 single forward pass (ZERO autoregressive loop).
+pub const PURE_CHUNK_SLOTS: usize = 64;
 
 pub const PURE_DIM: usize = 64;
 pub const PURE_LATENT: usize = 32;
@@ -150,7 +154,9 @@ pub struct PureAdaModel {
     pub embed_field3d: Vec<f32>,      // [PURE_DIM, 64]
     pub blocks: Vec<PureHybridBlock>, // 6 layers (4 KDA + 2 MLA)
     pub final_norm: Vec<f32>,         // [PURE_DIM]
-    pub lm_head: Vec<f32>,            // [PURE_VOCAB, PURE_DIM]
+    /// Parallel 64-slot NCM expansion `[PURE_CHUNK_SLOTS * PURE_DIM, PURE_DIM]` (1 pass -> 64 concept slots).
+    pub ncm_slot_proj: Vec<f32>,
+    pub lm_head: Vec<f32>, // [PURE_VOCAB, PURE_DIM]
     // Simulation Workspace Neural Heads (inside the exact same .safetensors)
     pub sim_voxel_proj: Vec<f32>,   // [PURE_VOXEL_COUNT, PURE_DIM]
     pub sim_voxel_conv3d: Vec<f32>, // [27] Frozen SACI 3D smoothing kernel
@@ -160,11 +166,13 @@ pub struct PureAdaModel {
     pub sim_ponder_b: f32,
 }
 
-/// Pure tensor outputs of a single `PureAdaModel::forward` pass.
+/// Pure tensor outputs of a single **non-autoregressive parallel 64-slot** `PureAdaModel::forward` pass.
 #[derive(Clone, Debug)]
 pub struct PureAdaOutput {
-    /// Next-token logits `[PURE_VOCAB]` directly from `h_final @ lm_head^T`.
-    pub logits: [f32; PURE_VOCAB],
+    /// Parallel 64-slot token logits `[PURE_CHUNK_SLOTS][PURE_VOCAB]` emitted in 1 forward pass.
+    pub chunk_logits: Vec<[f32; PURE_VOCAB]>,
+    /// Argmax decoded parallel 64-slot token IDs (`[PURE_CHUNK_SLOTS]`).
+    pub chunk_tokens: [u16; PURE_CHUNK_SLOTS],
     /// Final hidden state `[PURE_DIM]`.
     pub h_final: [f32; PURE_DIM],
     /// Generated 3D voxel SDF field `[8 x 8 x 8 = 512]` directly from neurons (`sim_voxel_proj -> conv3d`).
@@ -176,6 +184,22 @@ pub struct PureAdaOutput {
     /// PonderNet steps executed (`1..=4`) and final halt probability.
     pub ponder_steps: usize,
     pub ponder_halt_prob: f32,
+}
+
+impl PureAdaOutput {
+    /// Dumb byte decoder: converts `chunk_tokens` up to first `PURE_EOS` / `PURE_PAD` into UTF-8 bytes.
+    pub fn decoded_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(PURE_CHUNK_SLOTS);
+        for &tok in &self.chunk_tokens {
+            if tok == PURE_EOS || tok == PURE_PAD {
+                break;
+            }
+            if tok < 256 {
+                out.push(tok as u8);
+            }
+        }
+        out
+    }
 }
 
 /// Pure Burn Rust masked training step report.
@@ -364,6 +388,7 @@ impl PureAdaModel {
             embed_field3d,
             blocks,
             final_norm: vec![1.0_f32; PURE_DIM],
+            ncm_slot_proj: rand_mat(PURE_CHUNK_SLOTS * PURE_DIM * PURE_DIM, s_small),
             lm_head: rand_mat(PURE_VOCAB * PURE_DIM, s_dim),
             sim_voxel_proj: rand_mat(PURE_VOXEL_COUNT * PURE_DIM, s_small),
             sim_voxel_conv3d,
@@ -599,18 +624,38 @@ impl PureAdaModel {
             }
         }
 
-        // 4. Final RMSNorm -> Pure Neural Output Heads (LM logits + 3D Voxel SDF + 2D Pixel RGB)
+        // 4. Final RMSNorm -> Pure Parallel 64-Slot NCM Output Head + 3D Voxel SDF + 2D Pixel RGB (1 PASS, ZERO AUTOREGRESSION!)
         let mut h_final = [0.0_f32; PURE_DIM];
         rms_norm(&seq[seq_len - 1], &self.final_norm, &mut h_final);
 
-        let mut logits = [0.0_f32; PURE_VOCAB];
-        for v in 0..PURE_VOCAB {
-            let row = v * PURE_DIM;
-            let mut acc = 0.0_f32;
-            for d in 0..PURE_DIM {
-                acc += self.lm_head[row + d] * h_final[d];
+        let mut chunk_logits = vec![[0.0_f32; PURE_VOCAB]; PURE_CHUNK_SLOTS];
+        let mut chunk_tokens = [PURE_PAD; PURE_CHUNK_SLOTS];
+        let mut slot_vec = [0.0_f32; PURE_DIM];
+        for s in 0..PURE_CHUNK_SLOTS {
+            let s_base = s * PURE_DIM * PURE_DIM;
+            for r in 0..PURE_DIM {
+                let row = s_base + r * PURE_DIM;
+                let mut acc = 0.0_f32;
+                for c in 0..PURE_DIM {
+                    acc += self.ncm_slot_proj[row + c] * h_final[c];
+                }
+                slot_vec[r] = silu(acc);
             }
-            logits[v] = acc;
+            let mut best_id = 0usize;
+            let mut best_val = f32::NEG_INFINITY;
+            for v in 0..PURE_VOCAB {
+                let row = v * PURE_DIM;
+                let mut acc = 0.0_f32;
+                for d in 0..PURE_DIM {
+                    acc += self.lm_head[row + d] * slot_vec[d];
+                }
+                chunk_logits[s][v] = acc;
+                if acc > best_val {
+                    best_val = acc;
+                    best_id = v;
+                }
+            }
+            chunk_tokens[s] = best_id as u16;
         }
 
         // 3D Voxel SDF Head (`h_final @ sim_voxel_proj^T` -> `Conv3D 3x3x3`)
@@ -673,7 +718,8 @@ impl PureAdaModel {
         }
 
         PureAdaOutput {
-            logits,
+            chunk_logits,
+            chunk_tokens,
             h_final,
             voxel_sdf_8x8x8,
             pixel_rgb_16x16,
@@ -683,77 +729,100 @@ impl PureAdaModel {
         }
     }
 
-    /// Pure autoregressive generation strictly from `forward()` + `argmax(logits)` (ZERO harness logic).
-    pub fn generate_bytes(
+    /// **Single-Pass Parallel 64-Slot Decoding (ZERO autoregressive loop!):**
+    /// Runs `forward()` ONCE to emit all 64 output slots + 3D voxel SDF + 2D pixel RGB in parallel.
+    pub fn forward_prompt_parallel(
         &self,
         prompt_bytes: &[u8],
         field3d: Option<&[f32; 64]>,
-        max_new_tokens: usize,
-    ) -> (Vec<u8>, PureAdaOutput) {
-        let mut ctx: Vec<u16> = Vec::with_capacity(prompt_bytes.len() + max_new_tokens + 2);
+    ) -> PureAdaOutput {
+        let mut ctx: Vec<u16> = Vec::with_capacity(prompt_bytes.len() + 2);
+        ctx.push(PURE_BOS);
+        for &b in prompt_bytes.iter().take(64) {
+            ctx.push(b as u16);
+        }
+        ctx.push(PURE_SEP);
+        self.forward(&ctx, field3d)
+    }
+
+    /// **Pure Parallel 64-Slot Masked Backpropagation Training Step (1 forward + 1 backward pass):**
+    /// Trains ALL 64 output slots + 3D Voxel head + 2D Pixel head + Router + Trainable Experts (`8..16`)
+    /// simultaneously in 1 step while locking ALL Frozen SACI Experts (`0..8`) at `0.00e0` bitwise drift.
+    pub fn train_masked_step_parallel(
+        &mut self,
+        prompt_bytes: &[u8],
+        target_bytes: &[u8],
+        target_voxel_sdf: Option<&[f32]>,
+        target_pixel_rgb: Option<&[f32]>,
+        lr: f32,
+    ) -> PureMaskedTrainReport {
+        let chk_before = self.frozen_saci_checksum();
+        let mut ctx: Vec<u16> = Vec::with_capacity(prompt_bytes.len() + 2);
         ctx.push(PURE_BOS);
         for &b in prompt_bytes.iter().take(64) {
             ctx.push(b as u16);
         }
         ctx.push(PURE_SEP);
 
-        let mut generated = Vec::with_capacity(max_new_tokens);
-        let mut last_out = self.forward(&ctx, field3d);
-        for _ in 0..max_new_tokens {
-            let mut best_id = 0usize;
-            let mut best_val = f32::NEG_INFINITY;
-            for (i, &v) in last_out.logits.iter().enumerate() {
-                if v > best_val {
-                    best_val = v;
-                    best_id = i;
-                }
-            }
-            if best_id as u16 == PURE_EOS {
-                break;
-            }
-            if best_id < 256 {
-                generated.push(best_id as u8);
-            }
-            ctx.push(best_id as u16);
-            if ctx.len() > 120 {
-                ctx.remove(1);
-            }
-            last_out = self.forward(&ctx, field3d);
-        }
-        (generated, last_out)
-    }
-
-    /// **Pure Masked Backpropagation Training Step:**
-    /// Updates ONLY trainable weights (`lm_head`, `sim_voxel_proj`, `sim_pixel_proj`, last-layer `w_router`,
-    /// trainable `experts[8..16]`, `final_norm`, and `embed_tokens`) while locking ALL Frozen SACI experts (`0..8`)
-    /// and SACI conv kernels at `0.00e0` bitwise drift.
-    pub fn train_masked_step(
-        &mut self,
-        tokens: &[u16],
-        target_token: u16,
-        target_voxel_sdf: Option<&[f32]>,
-        target_pixel_rgb: Option<&[f32]>,
-        lr: f32,
-    ) -> PureMaskedTrainReport {
-        let chk_before = self.frozen_saci_checksum();
-        let out = self.forward(tokens, None);
+        let out = self.forward(&ctx, None);
         let h = out.h_final;
 
-        // 1. Cross-Entropy gradient on `logits` -> update `lm_head` and backprop `dh`
-        let mut probs = out.logits;
-        softmax_in_place(&mut probs);
-        let tgt = (target_token as usize) % PURE_VOCAB;
-        let lm_loss = -(probs[tgt].max(1e-7)).ln();
+        // Build fixed 64-slot parallel target chunk (`target_bytes` + `PURE_EOS` + `PURE_PAD`)
+        let mut tgt_slots = [PURE_PAD; PURE_CHUNK_SLOTS];
+        let copy_n = target_bytes.len().min(PURE_CHUNK_SLOTS - 1);
+        for s in 0..copy_n {
+            tgt_slots[s] = target_bytes[s] as u16;
+        }
+        tgt_slots[copy_n] = PURE_EOS;
+        let active_slots = copy_n + 1;
 
+        // 1. Parallel 64-slot Cross-Entropy loss + exact backprop through `lm_head` & `ncm_slot_proj` -> `dh`
+        let mut lm_loss = 0.0_f32;
         let mut dh = [0.0_f32; PURE_DIM];
-        for v in 0..PURE_VOCAB {
-            let g_logit = probs[v] - if v == tgt { 1.0 } else { 0.0 };
-            let row = v * PURE_DIM;
-            for d in 0..PURE_DIM {
-                dh[d] += g_logit * self.lm_head[row + d];
-                self.lm_head[row + d] -= lr * g_logit * h[d];
+        let inv_s = 1.0 / (active_slots as f32);
+
+        for s in 0..active_slots {
+            // Recompute slot pre-act & post-act for exact SiLU derivative
+            let s_base = s * PURE_DIM * PURE_DIM;
+            let mut pre = [0.0_f32; PURE_DIM];
+            let mut post = [0.0_f32; PURE_DIM];
+            for r in 0..PURE_DIM {
+                let row = s_base + r * PURE_DIM;
+                let mut acc = 0.0_f32;
+                for c in 0..PURE_DIM {
+                    acc += self.ncm_slot_proj[row + c] * h[c];
+                }
+                pre[r] = acc;
+                post[r] = silu(acc);
+            }
+
+            let mut probs = out.chunk_logits[s];
+            softmax_in_place(&mut probs);
+            let tgt = (tgt_slots[s] as usize) % PURE_VOCAB;
+            lm_loss += -(probs[tgt].max(1e-7)).ln();
+
+            let mut d_post = [0.0_f32; PURE_DIM];
+            for v in 0..PURE_VOCAB {
+                let g_logit = (probs[v] - if v == tgt { 1.0 } else { 0.0 }) * inv_s;
+                let row = v * PURE_DIM;
+                for d in 0..PURE_DIM {
+                    d_post[d] += g_logit * self.lm_head[row + d];
+                    self.lm_head[row + d] -= lr * g_logit * post[d];
+                }
+            }
+
+            for r in 0..PURE_DIM {
+                let sig = sigmoid(pre[r]);
+                let d_silu = sig * (1.0 + pre[r] * (1.0 - sig));
+                let g_pre = d_post[r] * d_silu;
+                let row = s_base + r * PURE_DIM;
+                for c in 0..PURE_DIM {
+                    dh[c] += g_pre * self.ncm_slot_proj[row + c];
+                    self.ncm_slot_proj[row + c] -= lr * 3.0 * g_pre * h[c];
+                }
             }
         }
+        lm_loss *= inv_s;
 
         // 2. MSE gradient on 3D Voxel SDF head (`sim_voxel_proj`)
         let mut voxel_mse = 0.0_f32;
@@ -767,7 +836,7 @@ impl PureAdaModel {
                     let row = i * PURE_DIM;
                     for d in 0..PURE_DIM {
                         dh[d] += 0.25 * g * self.sim_voxel_proj[row + d];
-                        self.sim_voxel_proj[row + d] -= lr * 4.0 * g * h[d];
+                        self.sim_voxel_proj[row + d] -= lr * 6.0 * g * h[d];
                     }
                 }
                 voxel_mse /= PURE_VOXEL_COUNT as f32;
@@ -787,7 +856,7 @@ impl PureAdaModel {
                     let row = i * PURE_DIM;
                     for d in 0..PURE_DIM {
                         dh[d] += 0.25 * g * self.sim_pixel_proj[row + d];
-                        self.sim_pixel_proj[row + d] -= lr * 4.0 * g * h[d];
+                        self.sim_pixel_proj[row + d] -= lr * 6.0 * g * h[d];
                     }
                 }
                 pixel_mse /= PURE_PIXEL_COUNT as f32;
@@ -812,7 +881,6 @@ impl PureAdaModel {
                 }
             }
         }
-        // Update MoE router weights toward lower-loss directions
         for e in 0..PURE_NUM_EXPERTS {
             let p = out.last_router_probs[e];
             let row = e * PURE_DIM;
@@ -820,9 +888,8 @@ impl PureAdaModel {
                 last_blk.w_router[row + d] -= lr * 0.05 * p * dh[d];
             }
         }
-        // Update input token embeddings for active tokens
-        let t_scale = lr * 0.15 / (tokens.len().max(1) as f32);
-        for &tok in tokens {
+        let t_scale = lr * 0.2 / (ctx.len().max(1) as f32);
+        for &tok in &ctx {
             let row = ((tok as usize) % PURE_VOCAB) * PURE_DIM;
             for d in 0..PURE_DIM {
                 self.embed_tokens[row + d] -= t_scale * dh[d];
@@ -953,6 +1020,12 @@ impl PureAdaModel {
             to_f64(&self.final_norm),
         ));
         owned.push((
+            String::from("model.ncm_head.slots.weight"),
+            vec![PURE_CHUNK_SLOTS, PURE_DIM, PURE_DIM],
+            WeightDtype::BF16,
+            to_f64(&self.ncm_slot_proj),
+        ));
+        owned.push((
             String::from("model.lm_head.weight"),
             vec![PURE_VOCAB, PURE_DIM],
             WeightDtype::F32,
@@ -1070,6 +1143,7 @@ impl PureAdaModel {
             embed_field3d,
             blocks,
             final_norm: to_f32(&find("model.final_norm.weight")?.data),
+            ncm_slot_proj: to_f32(&find("model.ncm_head.slots.weight")?.data),
             lm_head: to_f32(&find("model.lm_head.weight")?.data),
             sim_voxel_proj: to_f32(&find("model.sim.voxel_proj.weight")?.data),
             sim_voxel_conv3d: to_f32(&find("model.sim.voxel_conv3d.weight")?.data),
@@ -1263,46 +1337,40 @@ mod tests {
         }
         let tgt_px = vec![0.4_f32; PURE_PIXEL_COUNT];
 
-        // Train purely via masked backprop (Frozen SACI experts 0..8 MUST have 0.00e0 drift)
+        // Train purely via 1-pass parallel 64-slot masked backprop (Frozen SACI experts 0..8 MUST have 0.00e0 drift)
         let mut first_loss = 0.0_f32;
         let mut last_loss = 0.0_f32;
         let mut last_vox_mse = 0.0_f32;
-        for step in 0..45 {
-            let mut ctx = vec![PURE_BOS];
-            for &b in prompt {
-                ctx.push(b as u16);
-            }
-            ctx.push(PURE_SEP);
-            let mut step_loss = 0.0_f32;
-            for &tb in target {
-                let rep =
-                    model.train_masked_step(&ctx, tb as u16, Some(&tgt_vox), Some(&tgt_px), 0.12);
-                assert_eq!(rep.saci_frozen_drift, 0.0);
-                step_loss += rep.lm_loss;
-                last_vox_mse = rep.voxel_mse;
-                ctx.push(tb as u16);
-            }
-            let rep_eos =
-                model.train_masked_step(&ctx, PURE_EOS, Some(&tgt_vox), Some(&tgt_px), 0.12);
-            assert_eq!(rep_eos.saci_frozen_drift, 0.0);
-            step_loss /= target.len() as f32;
+        for step in 0..80 {
+            let rep = model.train_masked_step_parallel(
+                prompt,
+                target,
+                Some(&tgt_vox),
+                Some(&tgt_px),
+                0.35,
+            );
+            assert_eq!(rep.saci_frozen_drift, 0.0);
             if step == 0 {
-                first_loss = step_loss;
+                first_loss = rep.lm_loss;
             }
-            last_loss = step_loss;
+            last_loss = rep.lm_loss;
+            last_vox_mse = rep.voxel_mse;
         }
         assert!(last_loss < first_loss);
         assert!(last_vox_mse < 0.25);
 
-        // Save to pure Burn .safetensors, reload from disk, and generate 100% from neurons!
+        // Save to pure Burn .safetensors, reload from disk, and decode ALL 64 slots in 1 SINGLE FORWARD PASS!
         let p = std::env::temp_dir().join("ada_pure_unified_test.safetensors");
         let (bytes, n_t, n_p) = model.save_burn_safetensors(&p).unwrap();
         assert!(bytes > 100_000 && n_t > 400 && n_p > 500_000);
         let reloaded = PureAdaModel::load_burn_safetensors(&p).unwrap();
         let _ = std::fs::remove_file(&p);
 
-        let (gen_bytes, gen_out) = reloaded.generate_bytes(prompt, None, 24);
-        assert_eq!(String::from_utf8_lossy(&gen_bytes), "cube_bore_ok");
+        let gen_out = reloaded.forward_prompt_parallel(prompt, None);
+        assert_eq!(
+            String::from_utf8_lossy(&gen_out.decoded_bytes()),
+            "cube_bore_ok"
+        );
         assert!(
             gen_out
                 .voxel_sdf_8x8x8

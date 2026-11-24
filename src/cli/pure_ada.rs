@@ -1,15 +1,15 @@
 //! CLI subcommand: `quintessa pure-ada` — Build, masked-train, save, reload, and run the
-//! **100% un-stitched, single-model pure-tensor `PureAdaModel`** (`ada_pure_unified.safetensors`).
+//! **100% un-stitched, single-model, NON-AUTOREGRESSIVE Parallel 64-Slot `PureAdaModel`**
+//! (`ada_pure_unified.safetensors`).
 //!
-//! Zero domain `if`/`match` statements in `forward()` — all text generation, 3D voxel SDF
-//! generation, and 2D pixel RGB generation come strictly from the `.safetensors` weights.
+//! 1 single `forward()` pass emits all 64 output token slots + 3D voxel SDF + 2D pixel RGB in parallel.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use quintessa::pure_ada_model::{
-    write_neural_pixel_ppm, write_neural_voxel_stl, PureAdaModel, PURE_BOS, PURE_EOS,
-    PURE_PIXEL_COUNT, PURE_SEP, PURE_VOXEL_COUNT, PURE_VOXEL_N,
+    write_neural_pixel_ppm, write_neural_voxel_stl, PureAdaModel, PURE_PIXEL_COUNT,
+    PURE_VOXEL_COUNT, PURE_VOXEL_N,
 };
 
 fn parse_flag(args: &[String], flag: &str) -> Option<String> {
@@ -74,6 +74,8 @@ fn make_target_sphere() -> (Vec<f32>, Vec<f32>) {
     (vox, px)
 }
 
+type DesignEpisode<'a> = (&'a [u8], &'a [u8], &'a [f32], &'a [f32]);
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let model_path = PathBuf::from(
         parse_flag(args, "--model")
@@ -90,9 +92,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to load {}: {e:?}", model_path.display()))?;
         let load_ms = t0.elapsed().as_millis();
 
+        // 1 SINGLE PARALLEL FORWARD PASS (zero autoregressive loop!)
         let t1 = Instant::now();
-        let (gen_bytes, out) = model.generate_bytes(prompt.as_bytes(), None, 48);
-        let gen_ms = t1.elapsed().as_millis();
+        let out = model.forward_prompt_parallel(prompt.as_bytes(), None);
+        let gen_us = t1.elapsed().as_micros();
+        let gen_bytes = out.decoded_bytes();
         let gen_text = String::from_utf8_lossy(&gen_bytes);
         let solid_vox = out.voxel_sdf_8x8x8.iter().filter(|&&v| v <= 0.0).count();
         let saci_mass: f32 = out.last_router_probs[..8].iter().sum();
@@ -104,7 +108,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let ppm_b = write_neural_pixel_ppm(&out.pixel_rgb_16x16, &ppm_p)
             .map_err(|e| format!("PPM write failed: {e:?}"))?;
 
-        println!("=== PureAdaModel Inference (100% Pure-Tensor, Zero Harness Stitching) ===");
+        println!("=== PureAdaModel Parallel 64-Slot Inference (1 Forward Pass, Zero Autoregression, Zero Stitching) ===");
         println!(
             "  Model      : {} (loaded in {} ms)",
             model_path.display(),
@@ -112,8 +116,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         );
         println!("  Prompt     : {prompt}");
         println!(
-            "  Generated  : \"{gen_text}\" ({} ms | Ponder steps={} p={:.3} | SACI Router Mass={:.1}%)",
-            gen_ms,
+            "  Parallel64 : \"{gen_text}\" ({} us [1 pass!] | Ponder steps={} p={:.3} | SACI Router Mass={:.1}%)",
+            gen_us,
             out.ponder_steps,
             out.ponder_halt_prob,
             saci_mass * 100.0
@@ -126,7 +130,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "  Neural 2D  : 16x16 RGB -> {} ({ppm_b} B)",
             ppm_p.display()
         );
-        println!("  [8x8 Mid-Plane Z=4 Neural Voxel Slice (directly from model.sim.voxel_proj + conv3d)]:");
+        println!(
+            "  [8x8 Mid-Plane Z=4 Neural Voxel Slice (directly from model.sim.voxel_proj + conv3d)]:"
+        );
         for iy in 0..PURE_VOXEL_N {
             let mut row = String::with_capacity(16);
             for ix in 0..PURE_VOXEL_N {
@@ -138,13 +144,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Default: compile + masked-train PureAdaModel on multi-shape design episodes + save pure Burn .safetensors
     let t0 = Instant::now();
     let mut model = PureAdaModel::compile_new(2026);
     let (cube_vox, cube_px) = make_target_cube_bore();
     let (sph_vox, sph_px) = make_target_sphere();
 
-    let episodes: [(&[u8], &[u8], &[f32], &[f32]); 2] = [
+    let episodes: [DesignEpisode<'_>; 2] = [
         (
             b"design cube with bore",
             b"plan:box_union+bore_sub->verified",
@@ -159,7 +164,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    let steps = 55usize;
+    let steps = 90usize;
     let mut loss_start = 0.0_f32;
     let mut loss_end = 0.0_f32;
     let mut vox_mse_end = 0.0_f32;
@@ -167,25 +172,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     for step in 0..steps {
         let mut step_loss = 0.0_f32;
-        let mut tok_cnt = 0usize;
         for &(prompt, target, tvox, tpx) in &episodes {
-            let mut ctx = vec![PURE_BOS];
-            for &b in prompt {
-                ctx.push(b as u16);
-            }
-            ctx.push(PURE_SEP);
-            for &tb in target {
-                let rep = model.train_masked_step(&ctx, tb as u16, Some(tvox), Some(tpx), 0.14);
-                max_saci_drift = max_saci_drift.max(rep.saci_frozen_drift);
-                step_loss += rep.lm_loss;
-                vox_mse_end = rep.voxel_mse;
-                tok_cnt += 1;
-                ctx.push(tb as u16);
-            }
-            let rep_eos = model.train_masked_step(&ctx, PURE_EOS, Some(tvox), Some(tpx), 0.14);
-            max_saci_drift = max_saci_drift.max(rep_eos.saci_frozen_drift);
+            let rep = model.train_masked_step_parallel(prompt, target, Some(tvox), Some(tpx), 0.40);
+            max_saci_drift = max_saci_drift.max(rep.saci_frozen_drift);
+            step_loss += rep.lm_loss;
+            vox_mse_end = rep.voxel_mse;
         }
-        step_loss /= tok_cnt.max(1) as f32;
+        step_loss /= episodes.len() as f32;
         if step == 0 {
             loss_start = step_loss;
         }
@@ -196,7 +189,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .save_burn_safetensors(&model_path)
         .map_err(|e| format!("Save failed: {e:?}"))?;
 
-    println!("=== PureAdaModel Compiled & Masked-Trained (100% Pure-Tensor, Zero Stitching) ===");
+    println!("=== PureAdaModel Compiled & Parallel-Trained (1-Pass 64-Slot NCM, Zero Autoregression, Zero Stitching) ===");
     println!(
         "  Output      : {} ({:.2} MB, {} tensors, {} params, pure Burn {{\"format\":\"burn\"}})",
         model_path.display(),
@@ -205,7 +198,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         n_params
     );
     println!(
-        "  Training    : {} steps | LM CE Loss: {:.4} -> {:.4} | 3D Voxel MSE: {:.4} | Frozen SACI Drift: {:.2e}",
+        "  Training    : {} parallel steps | LM CE Loss: {:.4} -> {:.4} | 3D Voxel MSE: {:.4} | Frozen SACI Drift: {:.2e}",
         steps, loss_start, loss_end, vox_mse_end, max_saci_drift
     );
     println!("  Elapsed     : {} ms", t0.elapsed().as_millis());
