@@ -15,6 +15,7 @@ pub mod ada_scorecard;
 pub mod architecture;
 pub mod attention;
 pub mod bpk_loader;
+pub mod cad_brep;
 pub mod capability;
 pub mod checkpoint;
 pub mod compiler_passes;

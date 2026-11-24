@@ -17,6 +17,10 @@ use std::time::Instant;
 
 use quintessa::ada_compiler::AdaCapabilityDomain;
 use quintessa::ada_o1_insane::AdaO1InsaneModel;
+use quintessa::cad_brep::{
+    decode_to_binary_stl, decode_to_step_ap214, encode_from_step_ap214,
+    parse_cad_solid_from_prompt, run_fea_and_export_vtk, CadBrepSolid, FeaLoadCase,
+};
 use quintessa::fluency_multimodal_layer::{
     synthesize_speech_to_wav, FluencyCompileExample, MODAL_AUDIO_TOKENS, MODAL_CANVAS_ELEMS,
 };
@@ -325,6 +329,8 @@ fn infer_modality_for_prompt(prompt: &str) -> NcmModality {
         || lower.contains("csg")
         || lower.contains("solvespace")
         || lower.contains("canvas")
+        || lower.contains("step")
+        || lower.contains("fea")
     {
         NcmModality::VisualCad8x8
     } else if lower.contains("voice") || lower.contains("audio") || lower.contains("photo") {
@@ -346,6 +352,8 @@ fn print_chat_turn_output(
     model: &AdaO1InsaneModel,
     prompt: &str,
     voice_out: Option<&Path>,
+    cad_out_prefix: Option<&Path>,
+    imported_solid: Option<&CadBrepSolid>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mod_kind = infer_modality_for_prompt(prompt);
     let t_q = Instant::now();
@@ -376,6 +384,82 @@ fn print_chat_turn_output(
         et.workbook_dag_pnl_total,
         et.causal_scm_ate
     );
+
+    // Resolve parametric B-Rep solid (either from prompt or imported `--cad-in` STEP file)
+    let resolved_cad = parse_cad_solid_from_prompt(prompt).or_else(|| {
+        imported_solid.map(|s| {
+            let lower = prompt.to_ascii_lowercase();
+            let lc = if lower.contains("cantilever") || lower.contains("bending") {
+                FeaLoadCase::CantileverBending
+            } else if lower.contains("bearing") {
+                FeaLoadCase::BoreBearing
+            } else {
+                FeaLoadCase::TensileAxial
+            };
+            (*s, lc, 5_000.0)
+        })
+    });
+
+    if let Some((solid, load_case, load_n)) = resolved_cad {
+        let vtk_path = cad_out_prefix.map(|p| p.with_extension("vtk"));
+        let fea = run_fea_and_export_vtk(&solid, load_case, load_n, vtk_path.as_deref())
+            .map_err(|e| format!("CAD FEA simulation failed: {e:?}"))?;
+        println!(
+            "  [CAD B-Rep & FEA Pre-Check] {} ({:.1}x{:.1}x{:.1} mm, {} features) | Vol={:.2} mm^3 | Mass={:.2} g | MinWall={:.2} mm",
+            solid.material.step_code(),
+            solid.width_mm,
+            solid.height_mm,
+            solid.thickness_mm,
+            solid.feature_count,
+            solid.volume_mm3(),
+            solid.mass_g(),
+            solid.min_wall_thickness_mm()
+        );
+        println!(
+            "  [FEA Simulation] Load={:.0} N | Kt={:.2} | PeakVonMises={:.2} MPa (Yield={:.0} MPa) | SF={:.2} [{}] | MaxDefl={:.5} mm | HexCells={}",
+            fea.applied_load_n,
+            fea.stress_concentration_kt,
+            fea.peak_von_mises_mpa,
+            fea.yield_strength_mpa,
+            fea.safety_factor,
+            fea.status.as_str(),
+            fea.max_deflection_mm,
+            fea.active_hex_cells
+        );
+
+        if let Some(prefix) = cad_out_prefix {
+            let step_path = prefix.with_extension("step");
+            let stl_path = prefix.with_extension("stl");
+            let part_name = prefix
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("ada_o1_part");
+            let step_rep = decode_to_step_ap214(&solid, part_name, &step_path)
+                .map_err(|e| format!("STEP AP214 export failed: {e:?}"))?;
+            let (stl_bytes, stl_tris) = decode_to_binary_stl(&solid, 128, &stl_path)
+                .map_err(|e| format!("Binary STL export failed: {e:?}"))?;
+            println!(
+                "  [CAD STEP AP214] {} ({} bytes, {} ISO entities, {} B-Rep faces — ANSYS/FreeCAD/SolidWorks ready)",
+                step_path.display(),
+                step_rep.bytes_written,
+                step_rep.entity_count,
+                step_rep.face_count
+            );
+            if let Some(vp) = &vtk_path {
+                println!(
+                    "  [FEA VTK Field ] {} ({} hexahedral cells, von_mises_MPa + safety_factor — ParaView/ANSYS ready)",
+                    vp.display(),
+                    fea.active_hex_cells
+                );
+            }
+            println!(
+                "  [3D STL Preview] {} ({} bytes, {} triangles, 128-seg smooth bores)",
+                stl_path.display(),
+                stl_bytes,
+                stl_tris
+            );
+        }
+    }
 
     if mod_kind == NcmModality::VisualCad8x8 {
         println!("  [8x8 Simulation Canvas Cross-Section]:");
@@ -426,9 +510,37 @@ fn run_direct_safetensors_chat(args: &[String]) -> Result<(), Box<dyn std::error
     println!("  Loaded  : {} ms (zero recompilation)", load_ms);
 
     let voice_path = parse_flag(args, "--wav").map(PathBuf::from);
+    let cad_out_prefix = parse_flag(args, "--cad-out").map(PathBuf::from);
+    let imported_solid = if let Some(cad_in) = parse_flag(args, "--cad-in") {
+        let in_path = PathBuf::from(&cad_in);
+        let solid = encode_from_step_ap214(&in_path)
+            .map_err(|e| format!("STEP AP214 encode failed for {}: {e:?}", in_path.display()))?;
+        let f3d = solid.encode_to_ncm_field3d();
+        let f3d_energy: f32 = f3d.iter().map(|v| v * v).sum::<f32>().sqrt();
+        println!(
+            "  CAD In  : {} -> Encoded {} ({:.1}x{:.1}x{:.1} mm, {} features, Field3D4x4x4 L2={:.3})",
+            in_path.display(),
+            solid.material.step_code(),
+            solid.width_mm,
+            solid.height_mm,
+            solid.thickness_mm,
+            solid.feature_count,
+            f3d_energy
+        );
+        Some(solid)
+    } else {
+        None
+    };
+
     if let Some(prompt) = parse_flag(args, "--prompt") {
         println!("\nyou> {prompt}");
-        return print_chat_turn_output(&model, &prompt, voice_path.as_deref());
+        return print_chat_turn_output(
+            &model,
+            &prompt,
+            voice_path.as_deref(),
+            cad_out_prefix.as_deref(),
+            imported_solid.as_ref(),
+        );
     }
 
     println!("Type any question (CAD plate, Causal SCM, SQL, Gross Margin, NPV, Mean/StdDev, Tool-Use, or Architecture) or 'exit' to quit.");
@@ -449,7 +561,13 @@ fn run_direct_safetensors_chat(args: &[String]) -> Result<(), Box<dyn std::error
         if prompt.eq_ignore_ascii_case("exit") || prompt.eq_ignore_ascii_case("quit") {
             break;
         }
-        print_chat_turn_output(&model, prompt, voice_path.as_deref())?;
+        print_chat_turn_output(
+            &model,
+            prompt,
+            voice_path.as_deref(),
+            cad_out_prefix.as_deref(),
+            imported_solid.as_ref(),
+        )?;
     }
     Ok(())
 }
@@ -459,6 +577,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         || has_flag(args, "--chat")
         || has_flag(args, "--interactive")
         || parse_flag(args, "--prompt").is_some()
+        || parse_flag(args, "--cad-in").is_some()
     {
         return run_direct_safetensors_chat(args);
     }
