@@ -19,7 +19,7 @@ use quintessa::ada_compiler::AdaCapabilityDomain;
 use quintessa::ada_o1_insane::AdaO1InsaneModel;
 use quintessa::cad_brep::{
     decode_to_binary_stl, decode_to_step_ap214, encode_from_step_ap214,
-    parse_cad_solid_from_prompt, run_fea_and_export_vtk, CadBrepSolid, FeaLoadCase,
+    write_fea_vtk_from_model_report, CadBrepSolid,
 };
 use quintessa::fluency_multimodal_layer::{
     synthesize_speech_to_wav, FluencyCompileExample, MODAL_AUDIO_TOKENS, MODAL_CANVAS_ELEMS,
@@ -357,16 +357,18 @@ fn print_chat_turn_output(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mod_kind = infer_modality_for_prompt(prompt);
     let t_q = Instant::now();
-    let out = model.forward_all(prompt, mod_kind);
+    // Execute ALL 101 tensors & 44 SACI circuits INSIDE the loaded .safetensors model
+    let out = model.forward_with_cad_workspace(prompt, mod_kind, imported_solid.copied());
     let q_us = t_q.elapsed().as_micros();
     let et = &out.engines_telemetry;
 
     println!(
-        "\nada-o1 [modality={} | {} us | ETF={}/256 | SACI={}/42 | Ponder={}]>",
+        "\nada-o1 [modality={} | {} us | ETF={}/256 | SACI={}/{} | Ponder={}]>",
         mod_kind.as_str(),
         q_us,
         out.active_etf_neurons,
         et.saci_circuits_executed,
+        model.saci_descs.len(),
         if out.ponder_halted_verified {
             "HALTED_VERIFIED"
         } else {
@@ -385,58 +387,45 @@ fn print_chat_turn_output(
         et.causal_scm_ate
     );
 
-    // Resolve parametric B-Rep solid (either from prompt or imported `--cad-in` STEP file)
-    let resolved_cad = parse_cad_solid_from_prompt(prompt).or_else(|| {
-        imported_solid.map(|s| {
-            let lower = prompt.to_ascii_lowercase();
-            let lc = if lower.contains("cantilever") || lower.contains("bending") {
-                FeaLoadCase::CantileverBending
-            } else if lower.contains("bearing") {
-                FeaLoadCase::BoreBearing
-            } else {
-                FeaLoadCase::TensileAxial
-            };
-            (*s, lc, 5_000.0)
-        })
-    });
-
-    if let Some((solid, load_case, load_n)) = resolved_cad {
-        let vtk_path = cad_out_prefix.map(|p| p.with_extension("vtk"));
-        let fea = run_fea_and_export_vtk(&solid, load_case, load_n, vtk_path.as_deref())
-            .map_err(|e| format!("CAD FEA simulation failed: {e:?}"))?;
+    // Pure dumb I/O serialization of the model's own `out.cad_workspace` (ZERO CAD/FEA math in CLI!)
+    if let Some(cw) = out.cad_workspace {
+        let fea = cw.fea;
         println!(
-            "  [CAD B-Rep & FEA Pre-Check] {} ({:.1}x{:.1}x{:.1} mm, {} features) | Vol={:.2} mm^3 | Mass={:.2} g | MinWall={:.2} mm",
-            solid.material.step_code(),
-            solid.width_mm,
-            solid.height_mm,
-            solid.thickness_mm,
-            solid.feature_count,
-            solid.volume_mm3(),
-            solid.mass_g(),
-            solid.min_wall_thickness_mm()
+            "  [In-Model CAD/FEA (SACI #{}/#{} + Burn weights)] {} ({:.1}x{:.1}x{:.1} mm) | Vol={:.2} mm^3 | Mass={:.2} g | MinWall={:.2} mm",
+            cw.saci_wall_circuit_id,
+            cw.saci_fea_circuit_id,
+            cw.solid.material.step_code(),
+            cw.solid.width_mm,
+            cw.solid.height_mm,
+            cw.solid.thickness_mm,
+            cw.volume_mm3,
+            cw.mass_g,
+            cw.min_wall_mm
         );
         println!(
-            "  [FEA Simulation] Load={:.0} N | Kt={:.2} | PeakVonMises={:.2} MPa (Yield={:.0} MPa) | SF={:.2} [{}] | MaxDefl={:.5} mm | HexCells={}",
+            "  [In-Model FEA Result] Load={:.0} N | Kt={:.2} | PeakVonMises={:.2} MPa (Yield={:.0} MPa) | SF={:.2} [{}] | MaxDefl={:.5} mm",
             fea.applied_load_n,
             fea.stress_concentration_kt,
             fea.peak_von_mises_mpa,
             fea.yield_strength_mpa,
             fea.safety_factor,
             fea.status.as_str(),
-            fea.max_deflection_mm,
-            fea.active_hex_cells
+            fea.max_deflection_mm
         );
 
         if let Some(prefix) = cad_out_prefix {
             let step_path = prefix.with_extension("step");
+            let vtk_path = prefix.with_extension("vtk");
             let stl_path = prefix.with_extension("stl");
             let part_name = prefix
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("ada_o1_part");
-            let step_rep = decode_to_step_ap214(&solid, part_name, &step_path)
+            let step_rep = decode_to_step_ap214(&cw.solid, part_name, &step_path)
                 .map_err(|e| format!("STEP AP214 export failed: {e:?}"))?;
-            let (stl_bytes, stl_tris) = decode_to_binary_stl(&solid, 128, &stl_path)
+            let n_cells = write_fea_vtk_from_model_report(&cw.solid, &fea, &vtk_path)
+                .map_err(|e| format!("VTK export failed: {e:?}"))?;
+            let (stl_bytes, stl_tris) = decode_to_binary_stl(&cw.solid, 128, &stl_path)
                 .map_err(|e| format!("Binary STL export failed: {e:?}"))?;
             println!(
                 "  [CAD STEP AP214] {} ({} bytes, {} ISO entities, {} B-Rep faces — ANSYS/FreeCAD/SolidWorks ready)",
@@ -445,13 +434,11 @@ fn print_chat_turn_output(
                 step_rep.entity_count,
                 step_rep.face_count
             );
-            if let Some(vp) = &vtk_path {
-                println!(
-                    "  [FEA VTK Field ] {} ({} hexahedral cells, von_mises_MPa + safety_factor — ParaView/ANSYS ready)",
-                    vp.display(),
-                    fea.active_hex_cells
-                );
-            }
+            println!(
+                "  [FEA VTK Field ] {} ({} hexahedral cells, model-computed von_mises_MPa + safety_factor)",
+                vtk_path.display(),
+                n_cells
+            );
             println!(
                 "  [3D STL Preview] {} ({} bytes, {} triangles, 128-seg smooth bores)",
                 stl_path.display(),

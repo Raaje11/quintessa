@@ -1150,62 +1150,14 @@ pub struct CadFeaReport {
     pub status: FeaSafetyStatus,
 }
 
-/// Evaluate analytical + Kirsch stress-concentration 3D FEA check and optionally write a
-/// volumetric `.vtk` hexahedral mesh (`UNSTRUCTURED_GRID`) with `von_mises_MPa` and `safety_factor` fields.
-pub fn run_fea_and_export_vtk(
+/// Dumb I/O VTK serializer: writes a 3D hexahedral mesh (`UNSTRUCTURED_GRID`) from a
+/// `CadFeaReport` that was already computed inside `AdaO1InsaneModel` (`.saci` circuits + Burn tensors).
+/// Performs ZERO FEA safety/yield decisions; only evaluates spatial geometry for ParaView/ANSYS viewing.
+pub fn write_fea_vtk_from_model_report(
     solid: &CadBrepSolid,
-    load_case: FeaLoadCase,
-    applied_load_n: f64,
-    vtk_path: Option<&Path>,
-) -> Result<CadFeaReport, ErrorCode> {
-    let f_load = applied_load_n.abs().max(1.0);
-    let e_mpa = solid.material.youngs_modulus_mpa();
-    let sy_mpa = solid.material.yield_strength_mpa();
-
-    // Find governing bore for Peterson's finite-width stress concentration factor K_t
-    let mut max_bore_r = 0.0_f64;
-    for f in solid.active_features() {
-        if matches!(
-            f.kind,
-            CadFeatureKind::ThroughBore | CadFeatureKind::BlindBore
-        ) {
-            max_bore_r = max_bore_r.max(f.radius_mm);
-        }
-    }
-    let ratio = ((2.0 * max_bore_r) / solid.height_mm).clamp(0.0, 0.85);
-    let kt = if max_bore_r > 0.0 {
-        (3.0 - 3.13 * ratio + 3.66 * ratio * ratio - 1.53 * ratio.powi(3)).max(1.0)
-    } else {
-        1.0
-    };
-
-    let net_width = (solid.height_mm - 2.0 * max_bore_r).max(1.0);
-    let net_area_mm2 = net_width * solid.thickness_mm;
-
-    let (nominal_stress_mpa, max_deflection_mm) = match load_case {
-        FeaLoadCase::TensileAxial => {
-            let nom = f_load / net_area_mm2;
-            let gross_area = solid.height_mm * solid.thickness_mm;
-            let delta = (f_load * solid.width_mm) / (gross_area * e_mpa);
-            (nom, delta)
-        }
-        FeaLoadCase::CantileverBending => {
-            // Cantilever loaded at free end X = +W/2, fixed at X = -W/2
-            let i_xx = (solid.height_mm * solid.thickness_mm.powi(3)) / 12.0;
-            let c = 0.5 * solid.thickness_mm;
-            let nom = (f_load * solid.width_mm * c) / i_xx.max(1e-6);
-            let delta = (f_load * solid.width_mm.powi(3)) / (3.0 * e_mpa * i_xx.max(1e-6));
-            (nom, delta)
-        }
-        FeaLoadCase::BoreBearing => {
-            let d_bore = (2.0 * max_bore_r).max(2.0);
-            let nom = f_load / (d_bore * solid.thickness_mm);
-            let delta = (f_load * solid.width_mm) / (net_area_mm2 * e_mpa);
-            (nom, delta)
-        }
-    };
-
-    // Discretize on a bounded 24 x 16 x 6 hexahedral grid and evaluate Kirsch local Von Mises field
+    report: &CadFeaReport,
+    path: &Path,
+) -> Result<usize, ErrorCode> {
     const NX: usize = 24;
     const NY: usize = 16;
     const NZ: usize = 6;
@@ -1214,8 +1166,10 @@ pub fn run_fea_and_export_vtk(
     let z_max = solid.max_z_mm();
     let dz = z_max / (NZ as f64);
 
-    let mut active_cells: Vec<(usize, usize, usize, f64, f64)> = Vec::with_capacity(NX * NY * NZ);
-    let mut peak_vm = nominal_stress_mpa * kt;
+    let mut active_cells: Vec<(usize, usize, usize, f64)> = Vec::with_capacity(NX * NY * NZ);
+    let kt = report.stress_concentration_kt.max(1.0);
+    let nom = report.nominal_stress_mpa;
+    let sy_mpa = report.yield_strength_mpa;
 
     for iz in 0..NZ {
         let z = (iz as f64 + 0.5) * dz;
@@ -1223,11 +1177,9 @@ pub fn run_fea_and_export_vtk(
             let y = -0.5 * solid.height_mm + (iy as f64 + 0.5) * dy;
             for ix in 0..NX {
                 let x = -0.5 * solid.width_mm + (ix as f64 + 0.5) * dx;
-                let sdf = solid.sdf_mm(x, y, z);
-                if sdf > 0.0 {
+                if solid.sdf_mm(x, y, z) > 0.0 {
                     continue;
                 }
-                // Local Kirsch stress enhancement around every bore
                 let mut local_k = 1.0_f64;
                 for f in solid.active_features() {
                     if matches!(
@@ -1244,7 +1196,7 @@ pub fn run_fea_and_export_vtk(
                         local_k = local_k.max(k_kirsch);
                     }
                 }
-                let bend_factor = if load_case == FeaLoadCase::CantileverBending {
+                let bend_factor = if report.load_case == FeaLoadCase::CantileverBending {
                     let x_arm = (0.5 * solid.width_mm - x) / solid.width_mm;
                     let z_arm = ((z - 0.5 * solid.thickness_mm).abs())
                         / (0.5 * solid.thickness_mm).max(1e-6);
@@ -1252,110 +1204,83 @@ pub fn run_fea_and_export_vtk(
                 } else {
                     1.0
                 };
-                let vm = nominal_stress_mpa * local_k * bend_factor;
-                if vm > peak_vm {
-                    peak_vm = vm;
-                }
-                active_cells.push((ix, iy, iz, vm, sdf));
+                active_cells.push((ix, iy, iz, nom * local_k * bend_factor));
             }
         }
     }
 
-    let safety_factor = sy_mpa / peak_vm.max(1e-6);
-    let status = if safety_factor >= 2.0 {
-        FeaSafetyStatus::Safe
-    } else if safety_factor >= 1.0 {
-        FeaSafetyStatus::Marginal
-    } else {
-        FeaSafetyStatus::YieldFailure
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let file = File::create(path).map_err(|_| ErrorCode::IoError)?;
+    let mut w = BufWriter::new(file);
+    let n_pts = (NX + 1) * (NY + 1) * (NZ + 1);
+    let n_cells = active_cells.len();
+
+    writeln!(w, "# vtk DataFile Version 3.0").map_err(|_| ErrorCode::IoError)?;
+    writeln!(
+        w,
+        "ADA-o1 Model-Computed 3D FEA Field ({})",
+        solid.material.step_code()
+    )
+    .map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "ASCII").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "DATASET UNSTRUCTURED_GRID").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "POINTS {n_pts} float").map_err(|_| ErrorCode::IoError)?;
+    for iz in 0..=NZ {
+        let z = (iz as f64) * dz;
+        for iy in 0..=NY {
+            let y = -0.5 * solid.height_mm + (iy as f64) * dy;
+            for ix in 0..=NX {
+                let x = -0.5 * solid.width_mm + (ix as f64) * dx;
+                writeln!(w, "{x:.4} {y:.4} {z:.4}").map_err(|_| ErrorCode::IoError)?;
+            }
+        }
+    }
+
+    let pt_idx = |ix: usize, iy: usize, iz: usize| -> usize {
+        iz * (NY + 1) * (NX + 1) + iy * (NX + 1) + ix
     };
 
-    if let Some(path) = vtk_path {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
-        let file = File::create(path).map_err(|_| ErrorCode::IoError)?;
-        let mut w = BufWriter::new(file);
-        let n_pts = (NX + 1) * (NY + 1) * (NZ + 1);
-        let n_cells = active_cells.len();
-
-        writeln!(w, "# vtk DataFile Version 3.0").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "CELLS {n_cells} {}", n_cells * 9).map_err(|_| ErrorCode::IoError)?;
+    for &(ix, iy, iz, _) in &active_cells {
         writeln!(
             w,
-            "ADA-o1 3D FEA Stress Field ({})",
-            solid.material.step_code()
+            "8 {} {} {} {} {} {} {} {}",
+            pt_idx(ix, iy, iz),
+            pt_idx(ix + 1, iy, iz),
+            pt_idx(ix + 1, iy + 1, iz),
+            pt_idx(ix, iy + 1, iz),
+            pt_idx(ix, iy, iz + 1),
+            pt_idx(ix + 1, iy, iz + 1),
+            pt_idx(ix + 1, iy + 1, iz + 1),
+            pt_idx(ix, iy + 1, iz + 1),
         )
         .map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "ASCII").map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "DATASET UNSTRUCTURED_GRID").map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "POINTS {n_pts} float").map_err(|_| ErrorCode::IoError)?;
-        for iz in 0..=NZ {
-            let z = (iz as f64) * dz;
-            for iy in 0..=NY {
-                let y = -0.5 * solid.height_mm + (iy as f64) * dy;
-                for ix in 0..=NX {
-                    let x = -0.5 * solid.width_mm + (ix as f64) * dx;
-                    writeln!(w, "{x:.4} {y:.4} {z:.4}").map_err(|_| ErrorCode::IoError)?;
-                }
-            }
-        }
-
-        let pt_idx = |ix: usize, iy: usize, iz: usize| -> usize {
-            iz * (NY + 1) * (NX + 1) + iy * (NX + 1) + ix
-        };
-
-        writeln!(w, "CELLS {n_cells} {}", n_cells * 9).map_err(|_| ErrorCode::IoError)?;
-        for &(ix, iy, iz, _, _) in &active_cells {
-            writeln!(
-                w,
-                "8 {} {} {} {} {} {} {} {}",
-                pt_idx(ix, iy, iz),
-                pt_idx(ix + 1, iy, iz),
-                pt_idx(ix + 1, iy + 1, iz),
-                pt_idx(ix, iy + 1, iz),
-                pt_idx(ix, iy, iz + 1),
-                pt_idx(ix + 1, iy, iz + 1),
-                pt_idx(ix + 1, iy + 1, iz + 1),
-                pt_idx(ix, iy + 1, iz + 1),
-            )
-            .map_err(|_| ErrorCode::IoError)?;
-        }
-
-        writeln!(w, "CELL_TYPES {n_cells}").map_err(|_| ErrorCode::IoError)?;
-        for _ in 0..n_cells {
-            writeln!(w, "12").map_err(|_| ErrorCode::IoError)?;
-        }
-
-        writeln!(w, "CELL_DATA {n_cells}").map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "SCALARS von_mises_MPa float 1").map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "LOOKUP_TABLE default").map_err(|_| ErrorCode::IoError)?;
-        for &(_, _, _, vm, _) in &active_cells {
-            writeln!(w, "{vm:.4}").map_err(|_| ErrorCode::IoError)?;
-        }
-
-        writeln!(w, "SCALARS safety_factor float 1").map_err(|_| ErrorCode::IoError)?;
-        writeln!(w, "LOOKUP_TABLE default").map_err(|_| ErrorCode::IoError)?;
-        for &(_, _, _, vm, _) in &active_cells {
-            let sf = (sy_mpa / vm.max(1e-3)).min(99.99);
-            writeln!(w, "{sf:.4}").map_err(|_| ErrorCode::IoError)?;
-        }
-        w.flush().map_err(|_| ErrorCode::IoError)?;
     }
 
-    Ok(CadFeaReport {
-        load_case,
-        applied_load_n: f_load,
-        stress_concentration_kt: kt,
-        nominal_stress_mpa,
-        peak_von_mises_mpa: peak_vm,
-        yield_strength_mpa: sy_mpa,
-        safety_factor,
-        max_deflection_mm,
-        active_hex_cells: active_cells.len(),
-        status,
-    })
+    writeln!(w, "CELL_TYPES {n_cells}").map_err(|_| ErrorCode::IoError)?;
+    for _ in 0..n_cells {
+        writeln!(w, "12").map_err(|_| ErrorCode::IoError)?;
+    }
+
+    writeln!(w, "CELL_DATA {n_cells}").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "SCALARS von_mises_MPa float 1").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "LOOKUP_TABLE default").map_err(|_| ErrorCode::IoError)?;
+    for &(_, _, _, vm) in &active_cells {
+        writeln!(w, "{vm:.4}").map_err(|_| ErrorCode::IoError)?;
+    }
+
+    writeln!(w, "SCALARS safety_factor float 1").map_err(|_| ErrorCode::IoError)?;
+    writeln!(w, "LOOKUP_TABLE default").map_err(|_| ErrorCode::IoError)?;
+    for &(_, _, _, vm) in &active_cells {
+        let sf = (sy_mpa / vm.max(1e-3)).min(99.99);
+        writeln!(w, "{sf:.4}").map_err(|_| ErrorCode::IoError)?;
+    }
+    w.flush().map_err(|_| ErrorCode::IoError)?;
+    Ok(n_cells)
 }
 
 // ============================================================================
@@ -1714,14 +1639,21 @@ mod tests {
         let c8 = encoded.encode_to_canvas8x8();
         assert_eq!(c8.len(), 64);
 
-        // Run 3D FEA simulation & export VTK + high-res STL
-        let fea =
-            run_fea_and_export_vtk(&encoded, FeaLoadCase::TensileAxial, 10_000.0, Some(&vtk_p))
-                .unwrap();
-        assert!(fea.active_hex_cells > 1500);
-        assert!(fea.stress_concentration_kt > 2.0);
-        assert!(fea.safety_factor > 5.0);
-        assert_eq!(fea.status, FeaSafetyStatus::Safe);
+        // Write VTK mesh from a model-supplied FEA report + high-res STL
+        let dummy_report = CadFeaReport {
+            load_case: FeaLoadCase::TensileAxial,
+            applied_load_n: 10_000.0,
+            stress_concentration_kt: 2.29,
+            nominal_stress_mpa: 15.87,
+            peak_von_mises_mpa: 36.42,
+            yield_strength_mpa: 276.0,
+            safety_factor: 7.58,
+            max_deflection_mm: 0.0145,
+            active_hex_cells: 2160,
+            status: FeaSafetyStatus::Safe,
+        };
+        let n_cells = write_fea_vtk_from_model_report(&encoded, &dummy_report, &vtk_p).unwrap();
+        assert!(n_cells > 1500);
 
         let (stl_bytes, stl_tris) = decode_to_binary_stl(&encoded, 128, &stl_p).unwrap();
         assert!(stl_bytes > 30_000);
